@@ -578,7 +578,6 @@ void ComposePostHandler::_ComposeAndUpload(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("ComposePostHandler");
   }
-
   // XTRACE("ComposePostHandler::_ComposeAndUpload Start");
 
   // XTRACE("Redis RetrieveMessages start");
@@ -647,11 +646,8 @@ void ComposePostHandler::_ComposeAndUpload(
   post.req_id = req_id;
   post.text = text_reply.as_string();
   post.post_id = std::stoul(post_id_reply.as_string());
-  post.timestamp = duration_cast<milliseconds>(
-      system_clock::now().time_since_epoch()).count();
+  post.timestamp = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   post.post_type = static_cast<PostType::type>(stoi(post_type_reply.as_string()));
-
-  LOG(debug) << creator_reply.as_string();
 
   json creator_json = json::parse(creator_reply.as_string());
   post.creator.user_id = creator_json["user_id"];
@@ -787,8 +783,8 @@ void ComposePostHandler::_UploadPostHelper(
       Baggage b = Baggage::deserialize(response.baggage);
       JOIN_CURRENT_BAGGAGE(b);
     } catch (...) {
-      _post_storage_client_pool->Push(post_storage_client_wrapper);
       LOG(error) << "Failed to store post to post-storage-service";
+      _post_storage_client_pool->Push(post_storage_client_wrapper);
       // XTRACE("Failed to store post to post-storage-service");
       throw;
     }
@@ -896,11 +892,10 @@ void ComposePostHandler::_UploadHomeTimelineHelper(
     // XTRACE("Failed to connect to home-timeline-rabbitmq");
     _rabbitmq_teptr = std::current_exception();
   }
+  span->Finish();
   baggage_promise.set_value(BRANCH_CURRENT_BAGGAGE());
   DELETE_CURRENT_BAGGAGE();
 }
-
-
 
 } // namespace social_network
 
