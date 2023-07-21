@@ -45,7 +45,7 @@ void TextHandler::UploadText(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("TextHandler");
   }
-  XTRACE("TextHandler::UploadText", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("TextHandler::UploadText", {{"RequestID", std::to_string(req_id)}});
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -62,7 +62,7 @@ void TextHandler::UploadText(
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
     se.message = "Failed to connected to compose-review-service";
-    XTRACE("Failed to connect to compose-review-service");
+    // XTRACE("Failed to connect to compose-review-service");
     throw se;
   }
   auto compose_client = compose_client_wrapper->GetClient();
@@ -76,14 +76,14 @@ void TextHandler::UploadText(
   } catch (...) {
     _compose_client_pool->Push(compose_client_wrapper);
     LOG(error) << "Failed to upload movie_id to compose-review-service";
-    XTRACE("Failed to upload movie_id to compose-review-service");
+    // XTRACE("Failed to upload movie_id to compose-review-service");
     throw;
   }
   _compose_client_pool->Push(compose_client_wrapper);
 
   span->Finish();
 
-  XTRACE("TextHandler::UploadText complete");
+  // XTRACE("TextHandler::UploadText complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }

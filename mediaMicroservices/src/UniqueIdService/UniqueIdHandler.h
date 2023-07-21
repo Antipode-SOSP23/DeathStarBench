@@ -86,7 +86,7 @@ void UniqueIdHandler::UploadUniqueId(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("UniqueIdHandler");
   }
-  XTRACE("UniqueIdHandler::UploadUniqueId", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("UniqueIdHandler::UploadUniqueId", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -129,14 +129,14 @@ void UniqueIdHandler::UploadUniqueId(
   int64_t review_id = stoul(review_id_str, nullptr, 16) & 0x7FFFFFFFFFFFFFFF;
   LOG(debug) << "The review_id of the request "
       << req_id << " is " << review_id;
-  XTRACE("The review_id of the request " + std::to_string(req_id) + " is " + std::to_string(review_id));
+  // XTRACE("The review_id of the request " + std::to_string(req_id) + " is " + std::to_string(review_id));
 
   auto compose_client_wrapper = _compose_client_pool->Pop();
   if (!compose_client_wrapper) {
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
     se.message = "Failed to connected to compose-review-service";
-    XTRACE("Failed to connect to compose-review-service");
+    // XTRACE("Failed to connect to compose-review-service");
     throw se;
   }
   auto compose_client = compose_client_wrapper->GetClient();
@@ -149,13 +149,13 @@ void UniqueIdHandler::UploadUniqueId(
   } catch (...) {
     _compose_client_pool->Push(compose_client_wrapper);
     LOG(error) << "Failed to upload movie_id to compose-review-service";
-    XTRACE("Failed to upload movie_id to compose-review-service");
+    // XTRACE("Failed to upload movie_id to compose-review-service");
     throw;
   }
   _compose_client_pool->Push(compose_client_wrapper);
 
   span->Finish();
-  XTRACE("UniqueIdHandler::UploadUniqueId complete");
+  // XTRACE("UniqueIdHandler::UploadUniqueId complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }

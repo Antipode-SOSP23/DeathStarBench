@@ -28,7 +28,7 @@ class MovieInfoHandler : public MovieInfoServiceIf {
   void ReadMovieInfo(MovieInfoRpcResponse &response, int64_t req_id,
       const std::string& movie_id,
       const std::map<std::string, std::string> & carrier) override;
-  void WriteMovieInfo(BaseRpcResponse &response, int64_t req_id, const std::string& movie_id, 
+  void WriteMovieInfo(BaseRpcResponse &response, int64_t req_id, const std::string& movie_id,
       const std::string& title, const std::vector<Cast> & casts,
       int64_t plot_id, const std::vector<std::string> & thumbnail_ids,
       const std::vector<std::string> & photo_ids,
@@ -74,7 +74,7 @@ void MovieInfoHandler::WriteMovieInfo(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("MovieInfoHandler");
   }
-  XTRACE("MovieInfoHandler::WriteMovieInfo", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("MovieInfoHandler::WriteMovieInfo", {{"RequestID", std::to_string(req_id)}});
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -95,7 +95,7 @@ void MovieInfoHandler::WriteMovieInfo(
   const char *key;
   int idx = 0;
   char buf[16];
-  
+
   bson_t cast_list;
   BSON_APPEND_ARRAY_BEGIN(new_doc, "casts", &cast_list);
   for (auto &cast : casts) {
@@ -109,7 +109,7 @@ void MovieInfoHandler::WriteMovieInfo(
     idx++;
   }
   bson_append_array_end(new_doc, &cast_list);
-  
+
   idx = 0;
   bson_t thumbnail_id_list;
   BSON_APPEND_ARRAY_BEGIN(new_doc, "thumbnail_ids", &thumbnail_id_list);
@@ -146,7 +146,7 @@ void MovieInfoHandler::WriteMovieInfo(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to pop a client from MongoDB pool";
-    XTRACE("Failed to pop a client from MongoDB pool");
+    // XTRACE("Failed to pop a client from MongoDB pool");
     throw se;
   }
   auto collection = mongoc_client_get_collection(
@@ -155,22 +155,22 @@ void MovieInfoHandler::WriteMovieInfo(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to create collection movie-info from DB movie-info";
-    XTRACE("Failed to create collection movie-info from DB movie-info");
+    // XTRACE("Failed to create collection movie-info from DB movie-info");
     mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
     throw se;
   }
   bson_error_t error;
-  XTRACE("MongoInsertMovieInfo start");
+  // XTRACE("MongoInsertMovieInfo start");
   auto insert_span = opentracing::Tracer::Global()->StartSpan(
       "MongoInsertMovieInfo", { opentracing::ChildOf(&span->context()) });
   bool plotinsert = mongoc_collection_insert_one (
       collection, new_doc, nullptr, nullptr, &error);
   insert_span->Finish();
-  XTRACE("MongoInsertMovieInfo finish");
+  // XTRACE("MongoInsertMovieInfo finish");
   if (!plotinsert) {
     LOG(error) << "Error: Failed to insert movie-info to MongoDB: "
                << error.message;
-    XTRACE("Error: Failed to insert movie-info to MongoDB " + std::string(error.message));
+    // XTRACE("Error: Failed to insert movie-info to MongoDB " + std::string(error.message));
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = error.message;
@@ -185,7 +185,7 @@ void MovieInfoHandler::WriteMovieInfo(
   mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
 
   span->Finish();
-  XTRACE("MovieInfoService::WriteMovieInfo complete");
+  // XTRACE("MovieInfoService::WriteMovieInfo complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }
@@ -205,7 +205,7 @@ void MovieInfoHandler::ReadMovieInfo(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("MovieInfoHandler");
   }
-  XTRACE("MovieInfoHandler::ReadMovieInfo", {{"RequestID", std::to_string(req_id)}});  
+  // XTRACE("MovieInfoHandler::ReadMovieInfo", {{"RequestID", std::to_string(req_id)}});
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -216,7 +216,7 @@ void MovieInfoHandler::ReadMovieInfo(
       "ReadMovieInfo",
       { opentracing::ChildOf(parent_span->get()) });
   opentracing::Tracer::Global()->Inject(span->context(), writer);
-  
+
   memcached_return_t memcached_rc;
   memcached_st *memcached_client = memcached_pool_pop(
       _memcached_client_pool, true, &memcached_rc);
@@ -224,13 +224,13 @@ void MovieInfoHandler::ReadMovieInfo(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MEMCACHED_ERROR;
     se.message = "Failed to pop a client from memcached pool";
-    XTRACE("Failed to pop a client from memcached pool");
+    // XTRACE("Failed to pop a client from memcached pool");
     throw se;
   }
 
   size_t movie_info_mmc_size;
   uint32_t memcached_flags;
-  XTRACE("Memcached GetMovieInfo start");
+  // XTRACE("Memcached GetMovieInfo start");
   auto get_span = opentracing::Tracer::Global()->StartSpan(
       "MmcGetMovieInfo", { opentracing::ChildOf(&span->context()) });
   char *movie_info_mmc = memcached_get(
@@ -249,11 +249,11 @@ void MovieInfoHandler::ReadMovieInfo(
   }
   memcached_pool_push(_memcached_client_pool, memcached_client);
   get_span->Finish();
-  XTRACE("Memcached GetMovieInfo finish");
+  // XTRACE("Memcached GetMovieInfo finish");
 
   if (movie_info_mmc) {
     LOG(debug) << "Get movie-info " << movie_id << " cache hit from Memcached";
-    XTRACE("Cache hit in Memcached for movie " + movie_id);
+    // XTRACE("Cache hit in Memcached for movie " + movie_id);
     json movie_info_json = json::parse(std::string(
         movie_info_mmc, movie_info_mmc + movie_info_mmc_size));
     _return.movie_id = movie_info_json["movie_id"];
@@ -280,14 +280,14 @@ void MovieInfoHandler::ReadMovieInfo(
     free(movie_info_mmc);
   } else {
     // If not cached in memcached
-    XTRACE("Cache miss in Memcached.Checking in MongoDB");
+    // XTRACE("Cache miss in Memcached.Checking in MongoDB");
     mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
         _mongodb_client_pool);
     if (!mongodb_client) {
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to pop a client from MongoDB pool";
-      XTRACE("Failed to pop a client from MongoDB pool");
+      // XTRACE("Failed to pop a client from MongoDB pool");
       throw se;
     }
 
@@ -297,13 +297,13 @@ void MovieInfoHandler::ReadMovieInfo(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to create collection user from DB user";
-      XTRACE("Failed to create collection user from DB user");
+      // XTRACE("Failed to create collection user from DB user");
       mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       throw se;
     }
     bson_t *query = bson_new();
     BSON_APPEND_UTF8(query, "movie_id", movie_id.c_str());
-    XTRACE("MongoFindMovieInfo start");
+    // XTRACE("MongoFindMovieInfo start");
     auto find_span = opentracing::Tracer::Global()->StartSpan(
         "MongoFindMovieInfo", { opentracing::ChildOf(&span->context()) });
     mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
@@ -311,7 +311,7 @@ void MovieInfoHandler::ReadMovieInfo(
     const bson_t *doc;
     bool found = mongoc_cursor_next(cursor, &doc);
     find_span->Finish();
-    XTRACE("MongoFindMovieInfo finish");
+    // XTRACE("MongoFindMovieInfo finish");
     if (!found) {
       bson_error_t error;
       if (mongoc_cursor_error (cursor, &error)) {
@@ -327,7 +327,7 @@ void MovieInfoHandler::ReadMovieInfo(
         throw se;
       } else {
         LOG(warning) << "Movie_id: " << movie_id << " doesn't exist in MongoDB";
-        XTRACE("Movie_id: " + movie_id + " doesn't exist in MongoDB");
+        // XTRACE("Movie_id: " + movie_id + " doesn't exist in MongoDB");
         bson_destroy(query);
         mongoc_cursor_destroy(cursor);
         mongoc_collection_destroy(collection);
@@ -339,7 +339,7 @@ void MovieInfoHandler::ReadMovieInfo(
       }
     } else {
       LOG(debug) << "Movie_id: " << movie_id << " found in MongoDB";
-      XTRACE("Movie_id: " + movie_id + " found in MongoDB");
+      // XTRACE("Movie_id: " + movie_id + " found in MongoDB");
       auto movie_info_json_char = bson_as_json(doc, nullptr);
       json movie_info_json = json::parse(movie_info_json_char);
       _return.movie_id = movie_info_json["movie_id"];
@@ -369,17 +369,17 @@ void MovieInfoHandler::ReadMovieInfo(
       mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
 
       // upload movie-info to memcached
-      XTRACE("Uploading movie info to memcached");
+      // XTRACE("Uploading movie info to memcached");
       memcached_client = memcached_pool_pop(
           _memcached_client_pool, true, &memcached_rc);
       if (!memcached_client) {
         ServiceException se;
         se.errorCode = ErrorCode::SE_MEMCACHED_ERROR;
         se.message = "Failed to pop a client from memcached pool";
-        XTRACE("Failed to pop a client from memcached pool");
+        // XTRACE("Failed to pop a client from memcached pool");
         throw se;
       }
-      XTRACE("Memcached SetMovieInfo start");
+      // XTRACE("Memcached SetMovieInfo start");
       auto set_span = opentracing::Tracer::Global()->StartSpan(
           "MmcSetMovieInfo", { opentracing::ChildOf(&span->context()) });
 
@@ -394,16 +394,16 @@ void MovieInfoHandler::ReadMovieInfo(
       if (memcached_rc != MEMCACHED_SUCCESS) {
         LOG(warning) << "Failed to set movie_info to Memcached: "
                      << memcached_strerror(memcached_client, memcached_rc);
-        XTRACE("Failed to set movie_info to Memcached");
+        // XTRACE("Failed to set movie_info to Memcached");
       }
       set_span->Finish();
-      XTRACE("Memcached SetMovieInfo complete");
+      // XTRACE("Memcached SetMovieInfo complete");
       bson_free(movie_info_json_char);
       memcached_pool_push(_memcached_client_pool, memcached_client);
     }
   }
   span->Finish();
-  XTRACE("MovieInfoHandler::ReadMovieInfo complete");
+  // XTRACE("MovieInfoHandler::ReadMovieInfo complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   response.result = _return;
   DELETE_CURRENT_BAGGAGE();
@@ -422,7 +422,7 @@ void MovieInfoHandler::UpdateRating(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("MovieInfoHandler");
   }
-  XTRACE("MovieInfoHandler::UpdateRating", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("MovieInfoHandler::UpdateRating", {{"RequestID", std::to_string(req_id)}});
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -443,7 +443,7 @@ void MovieInfoHandler::UpdateRating(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to pop a client from MongoDB pool";
-    XTRACE("Failed to pop a client from MongoDB pool");
+    // XTRACE("Failed to pop a client from MongoDB pool");
     throw se;
   }
   auto collection = mongoc_client_get_collection(
@@ -452,20 +452,20 @@ void MovieInfoHandler::UpdateRating(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to create collection social_graph from MongoDB";
-    XTRACE("Failed to create colletion social_graph from MongoDB");
+    // XTRACE("Failed to create colletion social_graph from MongoDB");
     mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
     throw se;
   }
-  XTRACE("MongoFindMovieInfo start");
+  // XTRACE("MongoFindMovieInfo start");
   auto find_span = opentracing::Tracer::Global()->StartSpan(
       "MongoFindMovieInfo", {opentracing::ChildOf(&span->context())});
   mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
       collection, query, nullptr, nullptr);
-  XTRACE("MongoFindMovieInfo finish");
+  // XTRACE("MongoFindMovieInfo finish");
   const bson_t *doc;
   bool found = mongoc_cursor_next(cursor, &doc);
   if (found) {
-    XTRACE("MovieInfo found in MongoDB");
+    // XTRACE("MovieInfo found in MongoDB");
     bson_iter_t iter_0;
     bson_iter_t iter_1;
     bson_iter_init(&iter_0, doc);
@@ -487,7 +487,7 @@ void MovieInfoHandler::UpdateRating(
           "num_rating", BCON_INT32(num_rating), "}");
       bson_error_t error;
       bson_t reply;
-      XTRACE("MongoUpdateRating start");
+      // XTRACE("MongoUpdateRating start");
       auto update_span = opentracing::Tracer::Global()->StartSpan(
           "MongoUpdateRating", {opentracing::ChildOf(&span->context())});
       bool updated = mongoc_collection_find_and_modify(
@@ -504,7 +504,7 @@ void MovieInfoHandler::UpdateRating(
       if (!updated) {
         LOG(error) << "Failed to update rating for movie " << movie_id
                    << " to MongoDB: " << error.message;
-        XTRACE("Failed to update rating for movie " + movie_id + " to MongoDB");
+        // XTRACE("Failed to update rating for movie " + movie_id + " to MongoDB");
         ServiceException se;
         se.errorCode = ErrorCode::SE_MONGODB_ERROR;
         se.message = "Failed to update rating for movie " + movie_id +
@@ -516,11 +516,11 @@ void MovieInfoHandler::UpdateRating(
         throw se;
       }
       update_span->Finish();
-      XTRACE("MongoUpdateRating finish");
+      // XTRACE("MongoUpdateRating finish");
     }
   }
 
-  XTRACE("Memcached Delete Start");
+  // XTRACE("Memcached Delete Start");
   auto delete_span = opentracing::Tracer::Global()->StartSpan(
       "MmcDelete", {opentracing::ChildOf(&span->context())});
   memcached_return_t memcached_rc;
@@ -530,16 +530,16 @@ void MovieInfoHandler::UpdateRating(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MEMCACHED_ERROR;
     se.message = "Failed to pop a client from memcached pool";
-    XTRACE("Failed to pop a client from memcached pool");
+    // XTRACE("Failed to pop a client from memcached pool");
     throw se;
   }
   memcached_delete(memcached_client, movie_id.c_str(), movie_id.length(), 0);
   memcached_pool_push(_memcached_client_pool, memcached_client);
   delete_span->Finish();
-  XTRACE("Memcached Delete finish");
+  // XTRACE("Memcached Delete finish");
 
   span->Finish();
-  XTRACE("MovieInfoHandler::UpdateRating complete");
+  // XTRACE("MovieInfoHandler::UpdateRating complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }

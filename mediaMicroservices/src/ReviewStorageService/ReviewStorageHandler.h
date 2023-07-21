@@ -22,11 +22,11 @@ class ReviewStorageHandler : public ReviewStorageServiceIf{
  public:
   ReviewStorageHandler(memcached_pool_st *, mongoc_client_pool_t *);
   ~ReviewStorageHandler() override = default;
-  void StoreReview(BaseRpcResponse &, int64_t, const Review &, 
+  void StoreReview(BaseRpcResponse &, int64_t, const Review &,
       const std::map<std::string, std::string> &) override;
   void ReadReviews(ReviewListRpcResponse &, int64_t, const std::vector<int64_t> &,
                    const std::map<std::string, std::string> &) override;
-  
+
  private:
   memcached_pool_st *_memcached_client_pool;
   mongoc_client_pool_t *_mongodb_client_pool;
@@ -41,7 +41,7 @@ ReviewStorageHandler::ReviewStorageHandler(
 
 void ReviewStorageHandler::StoreReview(
     BaseRpcResponse &response,
-    int64_t req_id, 
+    int64_t req_id,
     const Review &review,
     const std::map<std::string, std::string> & carrier) {
 
@@ -53,7 +53,7 @@ void ReviewStorageHandler::StoreReview(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("ReviewStorageHandler");
   }
-  XTRACE("ReviewStorageHandler::StoreReview", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("ReviewStorageHandler::StoreReview", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -70,7 +70,7 @@ void ReviewStorageHandler::StoreReview(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to pop a client from MongoDB pool";
-    XTRACE("Failed to pop a client from MongoDB pool");
+    // XTRACE("Failed to pop a client from MongoDB pool");
     throw se;
   }
 
@@ -80,7 +80,7 @@ void ReviewStorageHandler::StoreReview(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to create collection user from DB user";
-    XTRACE("Failed to create collection user from DB user");
+    // XTRACE("Failed to create collection user from DB user");
     mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
     throw se;
   }
@@ -95,18 +95,18 @@ void ReviewStorageHandler::StoreReview(
   BSON_APPEND_INT64(new_doc, "req_id", review.req_id);
   bson_error_t error;
 
-  XTRACE("MongoInsertReview start");
+  // XTRACE("MongoInsertReview start");
   auto insert_span = opentracing::Tracer::Global()->StartSpan(
       "MongoInsertReview", { opentracing::ChildOf(&span->context()) });
   bool plotinsert = mongoc_collection_insert_one (
       collection, new_doc, nullptr, nullptr, &error);
   insert_span->Finish();
-  XTRACE("MongoInsertReview finish");
+  // XTRACE("MongoInsertReview finish");
 
   if (!plotinsert) {
     LOG(error) << "Error: Failed to insert review to MongoDB: "
         << error.message;
-    XTRACE("Error: Failed to insert review to MongoDB: " + std::string(error.message));
+    // XTRACE("Error: Failed to insert review to MongoDB: " + std::string(error.message));
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = error.message;
@@ -121,7 +121,7 @@ void ReviewStorageHandler::StoreReview(
   mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
 
   span->Finish();
-  XTRACE("ReviewStorageHandler::StoreReview complete");
+  // XTRACE("ReviewStorageHandler::StoreReview complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }
@@ -140,7 +140,7 @@ void ReviewStorageHandler::ReadReviews(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("ReviewStorageHandler");
   }
-  XTRACE("ReviewStorageHandler::ReadReviews", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("ReviewStorageHandler::ReadReviews", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -160,7 +160,7 @@ void ReviewStorageHandler::ReadReviews(
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_HANDLER_ERROR;
     se.message = "Post_ids are duplicated";
-    XTRACE("Post_ids are duplicated");
+    // XTRACE("Post_ids are duplicated");
     throw se;
   }
   std::map<int64_t, Review> return_map;
@@ -171,7 +171,7 @@ void ReviewStorageHandler::ReadReviews(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MEMCACHED_ERROR;
     se.message = "Failed to pop a client from memcached pool";
-    XTRACE("Failed to pop a client from memcached pool");
+    // XTRACE("Failed to pop a client from memcached pool");
     throw se;
   }
 
@@ -192,7 +192,7 @@ void ReviewStorageHandler::ReadReviews(
   if (memcached_rc != MEMCACHED_SUCCESS) {
     LOG(error) << "Cannot get review-ids of request " << req_id << ": "
                << memcached_strerror(memcached_client, memcached_rc);
-    XTRACE("Cannot get review-ids of requqest " + std::to_string(req_id) + ": " + std::string(memcached_strerror(memcached_client, memcached_rc)));
+    // XTRACE("Cannot get review-ids of requqest " + std::to_string(req_id) + ": " + std::string(memcached_strerror(memcached_client, memcached_rc)));
     ServiceException se;
     se.errorCode = ErrorCode::SE_MEMCACHED_ERROR;
     se.message = memcached_strerror(memcached_client, memcached_rc);
@@ -205,7 +205,7 @@ void ReviewStorageHandler::ReadReviews(
   char *return_value;
   size_t return_value_length;
   uint32_t flags;
-  XTRACE("MemcachedMget start");
+  // XTRACE("MemcachedMget start");
   auto get_span = opentracing::Tracer::Global()->StartSpan(
       "MemcachedMget", { opentracing::ChildOf(&span->context()) });
 
@@ -215,7 +215,7 @@ void ReviewStorageHandler::ReadReviews(
                         &return_value_length, &flags, &memcached_rc);
     if (return_value == nullptr) {
       LOG(debug) << "Memcached mget finished";
-      XTRACE("Memcached mget finished");
+      // XTRACE("Memcached mget finished");
       break;
     }
     if (memcached_rc != MEMCACHED_SUCCESS) {
@@ -226,7 +226,7 @@ void ReviewStorageHandler::ReadReviews(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MEMCACHED_ERROR;
       se.message = "Cannot get reviews of request " + std::to_string(req_id);
-      XTRACE("Cannot get reviews of request " + std::to_string(req_id));
+      // XTRACE("Cannot get reviews of request " + std::to_string(req_id));
       throw se;
     }
     Review new_review;
@@ -243,10 +243,10 @@ void ReviewStorageHandler::ReadReviews(
     review_ids_not_cached.erase(new_review.review_id);
     free(return_value);
     LOG(debug) << "Review: " << new_review.review_id << " found in memcached";
-    XTRACE("Review: " + std::to_string(new_review.review_id) + " found in memcached");
+    // XTRACE("Review: " + std::to_string(new_review.review_id) + " found in memcached");
   }
   get_span->Finish();
-  XTRACE("MemcachedMget finish");
+  // XTRACE("MemcachedMget finish");
   memcached_quit(memcached_client);
   memcached_pool_push(_memcached_client_pool, memcached_client);
   for (int i = 0; i < review_ids.size(); ++i) {
@@ -258,7 +258,7 @@ void ReviewStorageHandler::ReadReviews(
   std::vector<std::future<void>> set_futures;
   std::vector<Baggage> set_baggages;
   std::map<int64_t, std::string> review_json_map;
-  
+
   // Find the rest in MongoDB
   if (!review_ids_not_cached.empty()) {
     mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
@@ -267,7 +267,7 @@ void ReviewStorageHandler::ReadReviews(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to pop a client from MongoDB pool";
-      XTRACE("Failed to pop a client from MongoDB pool");
+      // XTRACE("Failed to pop a client from MongoDB pool");
       throw se;
     }
     auto collection = mongoc_client_get_collection(
@@ -276,7 +276,7 @@ void ReviewStorageHandler::ReadReviews(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to create collection user from DB user";
-      XTRACE("Failed to create collection user from DB user");
+      // XTRACE("Failed to create collection user from DB user");
       mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       throw se;
     }
@@ -298,7 +298,7 @@ void ReviewStorageHandler::ReadReviews(
     mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
         collection, query, nullptr, nullptr);
     const bson_t *doc;
-    XTRACE("MongoFindPosts start");
+    // XTRACE("MongoFindPosts start");
     auto find_span = opentracing::Tracer::Global()->StartSpan(
         "MongoFindPosts", {opentracing::ChildOf(&span->context())});
     while (true) {
@@ -321,7 +321,7 @@ void ReviewStorageHandler::ReadReviews(
       bson_free(review_json_char);
     }
     find_span->Finish();
-    XTRACE("MongoFindPosts complete");
+    // XTRACE("MongoFindPosts complete");
     bson_error_t error;
     if (mongoc_cursor_error(cursor, &error)) {
       LOG(warning) << error.message;
@@ -353,10 +353,10 @@ void ReviewStorageHandler::ReadReviews(
         ServiceException se;
         se.errorCode = ErrorCode::SE_MEMCACHED_ERROR;
         se.message = "Failed to pop a client from memcached pool";
-        XTRACE("Failed to pop a client from memcached pool");
+        // XTRACE("Failed to pop a client from memcached pool");
         throw se;
       }
-      XTRACE("Memcached SetPost start");
+      // XTRACE("Memcached SetPost start");
       auto set_span = opentracing::Tracer::Global()->StartSpan(
           "MmcSetPost", {opentracing::ChildOf(&span->context())});
       for (auto & it : review_json_map) {
@@ -372,7 +372,7 @@ void ReviewStorageHandler::ReadReviews(
       }
       memcached_pool_push(_memcached_client_pool, _memcached_client);
       set_span->Finish();
-      XTRACE("Memcached SetPost finish");
+      // XTRACE("Memcached SetPost finish");
     }));
   }
 
@@ -380,7 +380,7 @@ void ReviewStorageHandler::ReadReviews(
     try {
       for (std::vector<int>::size_type i=0; i < set_futures.size(); i++) {
         set_futures[i].get();
-        JOIN_CURRENT_BAGGAGE(set_baggages[i]); 
+        JOIN_CURRENT_BAGGAGE(set_baggages[i]);
       }
     } catch (...) {
       LOG(warning) << "Failed to set reviews to memcached";
@@ -389,7 +389,7 @@ void ReviewStorageHandler::ReadReviews(
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_HANDLER_ERROR;
     se.message = "review storage service: return set incomplete";
-    XTRACE("Return set incomplete");
+    // XTRACE("Return set incomplete");
     throw se;
   }
 
@@ -400,18 +400,18 @@ void ReviewStorageHandler::ReadReviews(
   try {
     for (std::vector<int>::size_type i=0; i < set_futures.size(); i++) {
       set_futures[i].get();
-      JOIN_CURRENT_BAGGAGE(set_baggages[i]); 
+      JOIN_CURRENT_BAGGAGE(set_baggages[i]);
     }
   } catch (...) {
     LOG(warning) << "Failed to set reviews to memcached";
-    XTRACE("Failed to set reviews to memcached");
+    // XTRACE("Failed to set reviews to memcached");
   }
 
-  XTRACE("ReviewStorageService::ReadReviews complete");
+  // XTRACE("ReviewStorageService::ReadReviews complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   response.result = _return;
   DELETE_CURRENT_BAGGAGE();
-  
+
 }
 
 } // namespace media_service

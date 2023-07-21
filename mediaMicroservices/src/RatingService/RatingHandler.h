@@ -53,7 +53,7 @@ void RatingHandler::UploadRating(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("RatingHandler");
   }
-  XTRACE("RatingHandler::UploadRating", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("RatingHandler::UploadRating", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -75,7 +75,7 @@ void RatingHandler::UploadRating(
       ServiceException se;
       se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
       se.message = "Failed to connected to compose-review-service";
-      XTRACE("Failed to connect to compose-review-service");
+      // XTRACE("Failed to connect to compose-review-service");
       throw se;
     }
     auto compose_client = compose_client_wrapper->GetClient();
@@ -88,7 +88,7 @@ void RatingHandler::UploadRating(
     } catch (...) {
       _compose_client_pool->Push(compose_client_wrapper);
       LOG(error) << "Failed to upload rating to compose-review-service";
-      XTRACE("Failed to upload rating to compose-review-service");
+      // XTRACE("Failed to upload rating to compose-review-service");
       throw;
     }
     _compose_client_pool->Push(compose_client_wrapper);
@@ -102,18 +102,18 @@ void RatingHandler::UploadRating(
       ServiceException se;
       se.errorCode = ErrorCode::SE_REDIS_ERROR;
       se.message = "Cannot connected to Redis server";
-      XTRACE("Cannot connect to Redis server");
+      // XTRACE("Cannot connect to Redis server");
       throw se;
     }
     auto redis_client = redis_client_wrapper->GetClient();
-    XTRACE("RedisInsert start");
+    // XTRACE("RedisInsert start");
     auto redis_span = opentracing::Tracer::Global()->StartSpan(
         "RedisInsert", {opentracing::ChildOf(&span->context())});
     redis_client->incrby(movie_id + ":uncommit_sum", rating);
     redis_client->incr(movie_id + ":uncommit_num");
     redis_client->sync_commit();
     redis_span->Finish();
-    XTRACE("RedisInsert finish");
+    // XTRACE("RedisInsert finish");
     _redis_client_pool->Push(redis_client_wrapper);
   });
 
@@ -122,7 +122,7 @@ void RatingHandler::UploadRating(
     JOIN_CURRENT_BAGGAGE(upload_baggage);
   } catch (...) {
     LOG(error) << "Failed to upload rating to compose-review-service";
-    XTRACE("Failed to upload rating to compose-review-service");
+    // XTRACE("Failed to upload rating to compose-review-service");
     throw;
   }
 
@@ -131,11 +131,11 @@ void RatingHandler::UploadRating(
     JOIN_CURRENT_BAGGAGE(redis_baggage);
   } catch (...) {
     LOG(error) << "Failed to update rating to rating-redis";
-    XTRACE("Failed to update rating to rating-redis");
+    // XTRACE("Failed to update rating to rating-redis");
     throw;
   }
   span->Finish();
-  XTRACE("RatingHandler::UploadRating complete");
+  // XTRACE("RatingHandler::UploadRating complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }

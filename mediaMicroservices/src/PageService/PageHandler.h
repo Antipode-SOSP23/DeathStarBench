@@ -66,7 +66,7 @@ void PageHandler::ReadPage(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("PageHandler");
   }
-  XTRACE("PageHandler::ReadPage", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("PageHandler::ReadPage", {{"RequestID", std::to_string(req_id)}});
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -93,7 +93,7 @@ void PageHandler::ReadPage(
       ServiceException se;
       se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
       se.message = "Failed to connected to movie-info-service";
-      XTRACE("Failed to connect to movie-info-service");
+      // XTRACE("Failed to connect to movie-info-service");
       throw se;
     }
     auto movie_info_client = movie_info_client_wrapper->GetClient();
@@ -108,7 +108,7 @@ void PageHandler::ReadPage(
     } catch (...) {
       _movie_info_client_pool->Push(movie_info_client_wrapper);
       LOG(error) << "Failed to read movie_info to movie-info-service";
-      XTRACE("Failed to read movie_info to movie-info-service");
+      // XTRACE("Failed to read movie_info to movie-info-service");
       throw;
     }
     _movie_info_client_pool->Push(movie_info_client_wrapper);
@@ -125,7 +125,7 @@ void PageHandler::ReadPage(
       ServiceException se;
       se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
       se.message = "Failed to connected to movie-review-service";
-      XTRACE("Failed to connect to movie-review-service");
+      // XTRACE("Failed to connect to movie-review-service");
       throw se;
     }
     auto movie_review_client = movie_review_client_wrapper->GetClient();
@@ -140,7 +140,7 @@ void PageHandler::ReadPage(
     } catch (...) {
       _movie_review_client_pool->Push(movie_review_client_wrapper);
       LOG(error) << "Failed to read reviews to movie-review-service";
-      XTRACE("Failed to read reviews to movie-review-service");
+      // XTRACE("Failed to read reviews to movie-review-service");
       throw;
     }
     _movie_review_client_pool->Push(movie_review_client_wrapper);
@@ -153,7 +153,7 @@ void PageHandler::ReadPage(
   } catch (...) {
     throw;
   }
-  
+
   std::vector<int64_t> cast_info_ids;
   for (auto &cast : _return.movie_info.casts) {
     cast_info_ids.emplace_back(cast.cast_info_id);
@@ -169,7 +169,7 @@ void PageHandler::ReadPage(
       ServiceException se;
       se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
       se.message = "Failed to connected to cast-info-service";
-      XTRACE("Failed to connect to cast-info-service");
+      // XTRACE("Failed to connect to cast-info-service");
       throw se;
     }
     auto cast_info_client = cast_info_client_wrapper->GetClient();
@@ -184,7 +184,7 @@ void PageHandler::ReadPage(
     } catch (...) {
       _cast_info_client_pool->Push(cast_info_client_wrapper);
       LOG(error) << "Failed to read cast-info to cast-info-service";
-      XTRACE("Failed to read cast-info from cast-info-service");
+      // XTRACE("Failed to read cast-info from cast-info-service");
       throw;
     }
     _cast_info_client_pool->Push(cast_info_client_wrapper);
@@ -201,7 +201,7 @@ void PageHandler::ReadPage(
       ServiceException se;
       se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
       se.message = "Failed to connected to plot-service";
-      XTRACE("Failed to connect to plot-service");
+      // XTRACE("Failed to connect to plot-service");
       throw se;
     }
     auto plot_client = plot_client_wrapper->GetClient();
@@ -216,7 +216,7 @@ void PageHandler::ReadPage(
     } catch (...) {
       _plot_client_pool->Push(plot_client_wrapper);
       LOG(error) << "Failed to read plot to plot-service";
-      XTRACE("Failed to read plot to plot-service");
+      // XTRACE("Failed to read plot to plot-service");
       throw;
     }
     _plot_client_pool->Push(plot_client_wrapper);
@@ -234,7 +234,7 @@ void PageHandler::ReadPage(
     throw;
   }
   span->Finish();
-  XTRACE("PageHandler::ReadPage complete");
+  // XTRACE("PageHandler::ReadPage complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }

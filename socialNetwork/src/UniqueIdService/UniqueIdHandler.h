@@ -90,7 +90,7 @@ void UniqueIdHandler::UploadUniqueId(
     XTrace::StartTrace("UniqueIdHandler");
   }
 
-  XTRACE("UniqueIdHandler::UploadUniqueId", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("UniqueIdHandler::UploadUniqueId", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -135,33 +135,33 @@ void UniqueIdHandler::UploadUniqueId(
   response.result = std::to_string(post_id);
 
   // Upload to compose post service
-  XTRACE("Uploading unique ID to compose post service");
+  // XTRACE("Uploading unique ID to compose post service");
   auto compose_post_client_wrapper = _compose_client_pool->Pop();
   if (!compose_post_client_wrapper) {
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
     se.message = "Failed to connect to compose-post-service";
-    XTRACE("Failed to connect to compose-post-service");
+    // XTRACE("Failed to connect to compose-post-service");
     throw se;
   }
   auto compose_post_client = compose_post_client_wrapper->GetClient();
   try {
     writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
     BaseRpcResponse cp_response;
-    compose_post_client->UploadUniqueId(cp_response, req_id, post_id, post_type, writer_text_map);    
+    compose_post_client->UploadUniqueId(cp_response, req_id, post_id, post_type, writer_text_map);
     Baggage b = Baggage::deserialize(cp_response.baggage);
     JOIN_CURRENT_BAGGAGE(b);
   } catch (...) {
     _compose_client_pool->Push(compose_post_client_wrapper);
     LOG(error) << "Failed to upload unique-id to compose-post-service";
-    XTRACE("Failed to upload unique-id to compose-post-service");
+    // XTRACE("Failed to upload unique-id to compose-post-service");
     throw;
   }
   _compose_client_pool->Push(compose_post_client_wrapper);
 
   span->Finish();
 
-  XTRACE("UniqueIdHandler::UploadUniqueId complete");
+  // XTRACE("UniqueIdHandler::UploadUniqueId complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }

@@ -57,7 +57,7 @@ void ReadHomeTimelineHandler::ReadHomeTimeline(
     XTrace::StartTrace("ReadHomeTimelineHandler");
   }
 
-  XTRACE("ReadHomeTimelineHandler::ReadHomeTimeline", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("ReadHomeTimelineHandler::ReadHomeTimeline", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -77,11 +77,11 @@ void ReadHomeTimelineHandler::ReadHomeTimeline(
     ServiceException se;
     se.errorCode = ErrorCode::SE_REDIS_ERROR;
     se.message = "Cannot connect to Redis server";
-    XTRACE("Cannot connect to Redis server");
+    // XTRACE("Cannot connect to Redis server");
     throw se;
   }
   auto redis_client = redis_client_wrapper->GetClient();
-  XTRACE("RedisFind start");
+  // XTRACE("RedisFind start");
   auto redis_span = opentracing::Tracer::Global()->StartSpan(
       "RedisFind", {opentracing::ChildOf(&span->context())});
   auto post_ids_future = redis_client->zrevrange(
@@ -89,17 +89,17 @@ void ReadHomeTimelineHandler::ReadHomeTimeline(
   redis_client->sync_commit();
   _redis_client_pool->Push(redis_client_wrapper);
   redis_span->Finish();
-  XTRACE("RedisFind complete");
+  // XTRACE("RedisFind complete");
   cpp_redis::reply post_ids_reply;
   try {
     post_ids_reply = post_ids_future.get();
   } catch (...) {
     LOG(error) << "Failed to read post_ids from home-timeline-redis";
-    XTRACE("Failed to read post_ids from home-timeline-redis");
+    // XTRACE("Failed to read post_ids from home-timeline-redis");
     throw;
   }
 
-  XTRACE("Collecting posts from Post IDs");
+  // XTRACE("Collecting posts from Post IDs");
   std::vector<int64_t> post_ids;
   auto post_ids_reply_array = post_ids_reply.as_array();
   for (auto &post_id_reply : post_ids_reply_array) {
@@ -111,12 +111,12 @@ void ReadHomeTimelineHandler::ReadHomeTimeline(
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
     se.message = "Failed to connect to post-storage-service";
-    XTRACE("Failed to connect to post-storage-service");
+    // XTRACE("Failed to connect to post-storage-service");
     throw se;
   }
   auto post_client = post_client_wrapper->GetClient();
   try {
-    XTRACE("Reading Posts");
+    // XTRACE("Reading Posts");
     writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
     post_client->ReadPosts(response, req_id, post_ids, writer_text_map);
     Baggage b = Baggage::deserialize(response.baggage);
@@ -124,13 +124,13 @@ void ReadHomeTimelineHandler::ReadHomeTimeline(
   } catch (...) {
     _post_client_pool->Push(post_client_wrapper);
     LOG(error) << "Failed to read posts from post-storage-service";
-    XTRACE("Failed to read posts from post-storage-service");
+    // XTRACE("Failed to read posts from post-storage-service");
     throw;
   }
   _post_client_pool->Push(post_client_wrapper);
   span->Finish();
 
-  XTRACE("ReadHomeTimelineHandler::ReadHomeTimeline complete");
+  // XTRACE("ReadHomeTimelineHandler::ReadHomeTimeline complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   DELETE_CURRENT_BAGGAGE();
 }

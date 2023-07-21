@@ -62,7 +62,7 @@ void UserReviewHandler::UploadUserReview(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("UserReviewHandler");
   }
-  XTRACE("UserReviewHandler::UploadUserReview", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("UserReviewHandler::UploadUserReview", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -79,7 +79,7 @@ void UserReviewHandler::UploadUserReview(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to pop a client from MongoDB pool";
-    XTRACE("Failed to pop a client from MongoDB pool");
+    // XTRACE("Failed to pop a client from MongoDB pool");
     throw se;
   }
 
@@ -89,19 +89,19 @@ void UserReviewHandler::UploadUserReview(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to create collection user-review from DB user-review";
-    XTRACE("Failed to create collection user-review from DB user-review");
+    // XTRACE("Failed to create collection user-review from DB user-review");
     mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
     throw se;
   }
 
   bson_t *query = bson_new();
   BSON_APPEND_INT64(query, "user_id", user_id);
-  XTRACE("MongoFindUser start");
+  // XTRACE("MongoFindUser start");
   auto find_span = opentracing::Tracer::Global()->StartSpan(
       "MongoFindUser", {opentracing::ChildOf(&span->context())});
   mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
       collection, query, nullptr, nullptr);
-  XTRACE("MongoFindUser complete");
+  // XTRACE("MongoFindUser complete");
   const bson_t *doc;
   bool found = mongoc_cursor_next(cursor, &doc);
   if (!found) {
@@ -112,17 +112,17 @@ void UserReviewHandler::UploadUserReview(
         "timestamp", BCON_INT64(timestamp), "}", "]"
     );
     bson_error_t error;
-    XTRACE("MongoInsert start");
+    // XTRACE("MongoInsert start");
     auto insert_span = opentracing::Tracer::Global()->StartSpan(
         "MongoInsert", {opentracing::ChildOf(&span->context())});
     bool plotinsert = mongoc_collection_insert_one(
         collection, new_doc, nullptr, nullptr, &error);
     insert_span->Finish();
-    XTRACE("MongoInsert finish");
+    // XTRACE("MongoInsert finish");
     if (!plotinsert) {
       LOG(error) << "Failed to insert user review of user " << user_id
                  << " to MongoDB: " << error.message;
-      XTRACE("Failed to insert user review of user " + std::to_string(user_id) + "to MongoDB");
+      // XTRACE("Failed to insert user review of user " + std::to_string(user_id) + "to MongoDB");
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = error.message;
@@ -148,18 +148,18 @@ void UserReviewHandler::UploadUserReview(
     );
     bson_error_t error;
     bson_t reply;
-    XTRACE("MongoUpdate start");
+    // XTRACE("MongoUpdate start");
     auto update_span = opentracing::Tracer::Global()->StartSpan(
         "MongoUpdate", {opentracing::ChildOf(&span->context())});
     bool plotupdate = mongoc_collection_find_and_modify(
         collection, query, nullptr, update, nullptr, false, false,
         true, &reply, &error);
     update_span->Finish();
-    XTRACE("MongoUpdate finish");
+    // XTRACE("MongoUpdate finish");
     if (!plotupdate) {
       LOG(error) << "Failed to update user-review for user " << user_id
                  << " to MongoDB: " << error.message;
-      XTRACE("Failed to update user-review for user " + std::to_string(user_id) + " to MongoDB");
+      // XTRACE("Failed to update user-review for user " + std::to_string(user_id) + " to MongoDB");
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = error.message;
@@ -184,11 +184,11 @@ void UserReviewHandler::UploadUserReview(
     ServiceException se;
     se.errorCode = ErrorCode::SE_REDIS_ERROR;
     se.message = "Cannot connected to Redis server";
-    XTRACE("Cannot connect to Redis server");
+    // XTRACE("Cannot connect to Redis server");
     throw se;
   }
   auto redis_client = redis_client_wrapper->GetClient();
-  XTRACE("RedisUpdate start");
+  // XTRACE("RedisUpdate start");
   auto redis_span = opentracing::Tracer::Global()->StartSpan(
       "RedisUpdate", {opentracing::ChildOf(&span->context())});
   auto num_reviews = redis_client->zcard(std::to_string(user_id));
@@ -203,10 +203,10 @@ void UserReviewHandler::UploadUserReview(
   }
   _redis_client_pool->Push(redis_client_wrapper);
   redis_span->Finish();
-  XTRACE("RedisUpdate complete");
+  // XTRACE("RedisUpdate complete");
   span->Finish();
   response.baggage = GET_CURRENT_BAGGAGE().str();
-  XTRACE("UserReviewHandler::WriteReview complete");
+  // XTRACE("UserReviewHandler::WriteReview complete");
 }
 
 void UserReviewHandler::ReadUserReviews(
@@ -223,7 +223,7 @@ void UserReviewHandler::ReadUserReviews(
   if (!XTrace::IsTracing()) {
     XTrace::StartTrace("UserReviewHandler");
   }
-  XTRACE("UserReviewHandler::ReadUserReviews", {{"RequestID", std::to_string(req_id)}});
+  // XTRACE("UserReviewHandler::ReadUserReviews", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -243,11 +243,11 @@ void UserReviewHandler::ReadUserReviews(
     ServiceException se;
     se.errorCode = ErrorCode::SE_REDIS_ERROR;
     se.message = "Cannot connected to Redis server";
-    XTRACE("Cannot connect to Redis server");
+    // XTRACE("Cannot connect to Redis server");
     throw se;
   }
   auto redis_client = redis_client_wrapper->GetClient();
-  XTRACE("RedisFind start");
+  // XTRACE("RedisFind start");
   auto redis_span = opentracing::Tracer::Global()->StartSpan(
       "RedisFind", {opentracing::ChildOf(&span->context())});
   auto review_ids_future = redis_client->zrevrange(
@@ -260,7 +260,7 @@ void UserReviewHandler::ReadUserReviews(
     review_ids_reply = review_ids_future.get();
   } catch (...) {
     LOG(error) << "Failed to read review_ids from user-review-redis";
-    XTRACE("Failed to read review_ids from user-review-redis");
+    // XTRACE("Failed to read review_ids from user-review-redis");
     _redis_client_pool->Push(redis_client_wrapper);
     throw;
   }
@@ -281,7 +281,7 @@ void UserReviewHandler::ReadUserReviews(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to pop a client from MongoDB pool";
-      XTRACE("Failed to pop a client from MongoDB pool");
+      // XTRACE("Failed to pop a client from MongoDB pool");
       throw se;
     }
     auto collection = mongoc_client_get_collection(
@@ -290,7 +290,7 @@ void UserReviewHandler::ReadUserReviews(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to create collection user-review from MongoDB";
-      XTRACE("Failed to create collection user-review from MongoDB");
+      // XTRACE("Failed to create collection user-review from MongoDB");
       throw se;
     }
 
@@ -301,13 +301,13 @@ void UserReviewHandler::ReadUserReviews(
         "$slice", "[",
         BCON_INT32(0), BCON_INT32(stop),
         "]", "}", "}");
-    XTRACE("MongoFindUserReviews start");
+    // XTRACE("MongoFindUserReviews start");
     auto find_span = opentracing::Tracer::Global()->StartSpan(
         "MongoFindUserReviews", {opentracing::ChildOf(&span->context())});
     mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
         collection, query, opts, nullptr);
     find_span->Finish();
-    XTRACE("MongoFindUserReviews finish");
+    // XTRACE("MongoFindUserReviews finish");
     const bson_t *doc;
     bool found = mongoc_cursor_next(cursor, &doc);
     if (found) {
@@ -355,7 +355,7 @@ void UserReviewHandler::ReadUserReviews(
           ServiceException se;
           se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
           se.message = "Failed to connected to review-storage-service";
-          XTRACE("Failed to connect to review-storage-service");
+          // XTRACE("Failed to connect to review-storage-service");
           throw se;
         }
         std::vector<Review> _return_reviews;
@@ -371,7 +371,7 @@ void UserReviewHandler::ReadUserReviews(
         } catch (...) {
           _review_client_pool->Push(review_client_wrapper);
           LOG(error) << "Failed to read review from review-storage-service";
-          XTRACE("Failed to read review from review-storage-service");
+          // XTRACE("Failed to read review from review-storage-service");
           throw;
         }
         _review_client_pool->Push(review_client_wrapper);
@@ -386,11 +386,11 @@ void UserReviewHandler::ReadUserReviews(
       ServiceException se;
       se.errorCode = ErrorCode::SE_REDIS_ERROR;
       se.message = "Cannot connected to Redis server";
-      XTRACE("Cannot connect to Redis server");
+      // XTRACE("Cannot connect to Redis server");
       throw se;
     }
     redis_client = redis_client_wrapper->GetClient();
-    XTRACE("RedisUpdate start");
+    // XTRACE("RedisUpdate start");
     auto redis_update_span = opentracing::Tracer::Global()->StartSpan(
         "RedisUpdate", {opentracing::ChildOf(&span->context())});
     redis_client->del(std::vector<std::string>{std::to_string(user_id)});
@@ -399,7 +399,7 @@ void UserReviewHandler::ReadUserReviews(
         std::to_string(user_id), options, redis_update_map);
     redis_client->commit();
     redis_update_span->Finish();
-    XTRACE("RedisUpdate finish");
+    // XTRACE("RedisUpdate finish");
   }
 
   try {
@@ -407,13 +407,13 @@ void UserReviewHandler::ReadUserReviews(
     JOIN_CURRENT_BAGGAGE(review_baggage);
   } catch (...) {
     LOG(error) << "Failed to get review from review-storage-service";
-    XTRACE("Failed to get review from review-storage-service");
+    // XTRACE("Failed to get review from review-storage-service");
     if (!redis_update_map.empty()) {
       try {
         zadd_reply_future.get();
       } catch (...) {
         LOG(error) << "Failed to Update Redis Server";
-        XTRACE("Failed to Update Redis Server");
+        // XTRACE("Failed to Update Redis Server");
       }
       _redis_client_pool->Push(redis_client_wrapper);
     }
@@ -425,7 +425,7 @@ void UserReviewHandler::ReadUserReviews(
       zadd_reply_future.get();
     } catch (...) {
       LOG(error) << "Failed to Update Redis Server";
-      XTRACE("Failed to Update Redis Server");
+      // XTRACE("Failed to Update Redis Server");
       _redis_client_pool->Push(redis_client_wrapper);
       throw;
     }
@@ -433,7 +433,7 @@ void UserReviewHandler::ReadUserReviews(
   }
 
   span->Finish();
-  XTRACE("UserReviewHandler::ReadUserReviews complete");
+  // XTRACE("UserReviewHandler::ReadUserReviews complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
   response.result = _return;
   DELETE_CURRENT_BAGGAGE();
