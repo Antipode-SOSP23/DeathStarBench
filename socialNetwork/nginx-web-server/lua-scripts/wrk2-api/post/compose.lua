@@ -71,8 +71,8 @@ local function _UploadUniqueId(req_id, post, carrier, baggage)
     xtracer.DeleteBaggage()
     ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
   end
-  xtracer.JoinBaggage(err.baggage)
   post_id = err.result;
+  xtracer.JoinBaggage(err.baggage)
   GenericObjectPool:returnConnection(unique_id_client)
   xtracer.DeleteBaggage()
 end

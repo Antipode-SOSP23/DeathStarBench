@@ -112,8 +112,7 @@ void OnReceivedWorker(const AMQP::Message &msg) {
     std::vector<std::string> options{"NX"};
     std::string post_id_str = std::to_string(post_id);
     std::string timestamp_str = std::to_string(timestamp);
-    std::multimap<std::string, std::string> value =
-        {{timestamp_str, post_id_str}};
+    std::multimap<std::string, std::string> value = {{timestamp_str, post_id_str}};
 
     for (auto &follower_id : followers_id_set) {
       redis_client->zadd(std::to_string(follower_id), options, value);
@@ -124,7 +123,7 @@ void OnReceivedWorker(const AMQP::Message &msg) {
     XTRACE("RedisUpdate complete");
     _redis_client_pool->Push(redis_client_wrapper);
   } catch (...) {
-    LOG(error) << "OnReveived worker error";
+    LOG(error) << "OnReceived worker error";
     throw;
   }
   DELETE_CURRENT_BAGGAGE();
