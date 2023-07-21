@@ -22,8 +22,7 @@ mongoc_client_pool_t* init_mongodb_client_pool(
 
   mongoc_init();
   bson_error_t error;
-  mongoc_uri_t *mongodb_uri =
-      mongoc_uri_new_with_error(uri_str.c_str(), &error);
+  mongoc_uri_t *mongodb_uri = mongoc_uri_new_with_error(uri_str.c_str(), &error);
 
   if (!mongodb_uri) {
     LOG(fatal) << "Error: failed to parse URI" << std::endl
