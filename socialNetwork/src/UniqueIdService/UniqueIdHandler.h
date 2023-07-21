@@ -57,7 +57,7 @@ class UniqueIdHandler : public UniqueIdServiceIf {
       const std::string &,
       ClientPool<ThriftClient<ComposePostServiceClient>> *);
 
-  void UploadUniqueId(BaseRpcResponse &, int64_t, PostType::type,
+  void UploadUniqueId(LoginRpcResponse &, int64_t, PostType::type,
       const std::map<std::string, std::string> &) override;
 
  private:
@@ -76,7 +76,7 @@ UniqueIdHandler::UniqueIdHandler(
 }
 
 void UniqueIdHandler::UploadUniqueId(
-    BaseRpcResponse &response,
+    LoginRpcResponse &response,
     int64_t req_id,
     PostType::type post_type,
     const std::map<std::string, std::string> & carrier) {

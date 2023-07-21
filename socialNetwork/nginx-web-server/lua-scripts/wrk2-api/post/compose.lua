@@ -109,7 +109,6 @@ local function _UploadMedia(req_id, post, carrier, baggage)
 end
 
 function _M.ComposePost()
-  print("I am here")
   local bridge_tracer = require "opentracing_bridge_tracer"
   local ngx = ngx
   local cjson = require "cjson"
