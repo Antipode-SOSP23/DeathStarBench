@@ -10,6 +10,8 @@
 #include "../ThriftClient.h"
 #include "../logger.h"
 #include "../tracing.h"
+#include <xtrace/xtrace.h>
+#include <xtrace/baggage.h>
 
 namespace media_service {
 
@@ -18,7 +20,7 @@ class TextHandler : public TextServiceIf {
   explicit TextHandler(ClientPool<ThriftClient<ComposeReviewServiceClient>> *);
   ~TextHandler() override = default;
 
-  void UploadText(int64_t, const std::string &,
+  void UploadText(BaseRpcResponse &, int64_t, const std::string &,
       const std::map<std::string, std::string> &) override;
  private:
   ClientPool<ThriftClient<ComposeReviewServiceClient>> *_compose_client_pool;
@@ -30,9 +32,20 @@ TextHandler::TextHandler(
 }
 
 void TextHandler::UploadText(
+    BaseRpcResponse &response,
     int64_t req_id,
     const std::string &text,
     const std::map<std::string, std::string> & carrier) {
+
+  std::map<std::string, std::string>::const_iterator baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("TextHandler");
+  }
+  XTRACE("TextHandler::UploadText", {{"RequestID", std::to_string(req_id)}});
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -49,19 +62,30 @@ void TextHandler::UploadText(
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
     se.message = "Failed to connected to compose-review-service";
+    XTRACE("Failed to connect to compose-review-service");
     throw se;
   }
   auto compose_client = compose_client_wrapper->GetClient();
+  Baggage compose_client_baggage = BRANCH_CURRENT_BAGGAGE();
   try {
-    compose_client->UploadText(req_id, text, writer_text_map);
+    writer_text_map["baggage"] = compose_client_baggage.str();
+    BaseRpcResponse response;
+    compose_client->UploadText(response, req_id, text, writer_text_map);
+    Baggage b = Baggage::deserialize(response.baggage);
+    JOIN_CURRENT_BAGGAGE(b);
   } catch (...) {
     _compose_client_pool->Push(compose_client_wrapper);
     LOG(error) << "Failed to upload movie_id to compose-review-service";
+    XTRACE("Failed to upload movie_id to compose-review-service");
     throw;
   }
   _compose_client_pool->Push(compose_client_wrapper);
 
   span->Finish();
+
+  XTRACE("TextHandler::UploadText complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  DELETE_CURRENT_BAGGAGE();
 }
 
 } //namespace media_service

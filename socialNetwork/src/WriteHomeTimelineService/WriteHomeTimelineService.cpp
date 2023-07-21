@@ -15,6 +15,8 @@
 #include "../utils.h"
 #include "../../gen-cpp/social_network_types.h"
 #include "../../gen-cpp/SocialGraphService.h"
+#include <xtrace/xtrace.h>
+#include <xtrace/baggage.h>
 
 #define NUM_WORKERS 4
 
@@ -39,6 +41,16 @@ void OnReceivedWorker(const AMQP::Message &msg) {
       carrier.emplace(std::make_pair(it.key(), it.value()));
     }
 
+    auto baggage_it = carrier.find("baggage");
+    if (baggage_it != carrier.end()) {
+      SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+    }
+
+    if (!XTrace::IsTracing()) {
+      XTrace::StartTrace("WriteHomeTimelineService");
+    }
+
+    XTRACE("WriteHomeTimelineService::OnReceivedWorker");
     // Jaeger tracing
     TextMapReader span_reader(carrier);
     auto parent_span = opentracing::Tracer::Global()->Extract(span_reader);
@@ -62,15 +74,22 @@ void OnReceivedWorker(const AMQP::Message &msg) {
       ServiceException se;
       se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
       se.message = "Failed to connect to social-graph-service";
+      XTRACE("Failed to connect to social-graph-service");
       throw se;
     }
     auto social_graph_client = social_graph_client_wrapper->GetClient();
     std::vector<int64_t> followers_id;
     try {
-      social_graph_client->GetFollowers(followers_id, req_id, user_id,
+      writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+      UidListRpcResponse response;
+      social_graph_client->GetFollowers(response, req_id, user_id,
                                         writer_text_map);
+      followers_id = response.result;
+      Baggage b = Baggage::deserialize(response.baggage);
+      JOIN_CURRENT_BAGGAGE(b);
     } catch (...) {
       LOG(error) << "Failed to get followers from social-network-service";
+      XTRACE("Failed to get followers from social-network-service");
       _social_graph_client_pool->Push(social_graph_client_wrapper);
       throw;
     }
@@ -81,6 +100,7 @@ void OnReceivedWorker(const AMQP::Message &msg) {
     followers_id_set.insert(user_mentions_id.begin(), user_mentions_id.end());
 
     // Update Redis ZSet
+    XTRACE("RedisUpdate start");
     auto redis_span = opentracing::Tracer::Global()->StartSpan(
         "RedisUpdate", {opentracing::ChildOf(&span->context())});
     auto redis_client_wrapper = _redis_client_pool->Pop();
@@ -88,6 +108,7 @@ void OnReceivedWorker(const AMQP::Message &msg) {
       ServiceException se;
       se.errorCode = ErrorCode::SE_REDIS_ERROR;
       se.message = "Cannot connect to Redis server";
+      XTRACE("Cannot connect to Redis server");
       throw se;
     }
     auto redis_client = redis_client_wrapper->GetClient();
@@ -103,11 +124,13 @@ void OnReceivedWorker(const AMQP::Message &msg) {
 
     redis_client->sync_commit();
     redis_span->Finish();
+    XTRACE("RedisUpdate complete");
     _redis_client_pool->Push(redis_client_wrapper);
   } catch (...) {
     LOG(error) << "OnReveived worker error";
     throw;
   }
+  DELETE_CURRENT_BAGGAGE();
 }
 
 void HeartbeatSend(AmqpLibeventHandler &handler,

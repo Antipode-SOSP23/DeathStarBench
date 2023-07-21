@@ -16,6 +16,8 @@
 #include "../ThriftClient.h"
 #include "../logger.h"
 #include "../tracing.h"
+#include <xtrace/xtrace.h>
+#include <xtrace/baggage.h>
 
 #define HOSTNAME "http://short-url/"
 
@@ -27,11 +29,11 @@ class UrlShortenHandler : public UrlShortenServiceIf {
       ClientPool<ThriftClient<ComposePostServiceClient>> *);
   ~UrlShortenHandler() override = default;
 
-  void UploadUrls(std::vector<std::string> &, int64_t,
+  void UploadUrls(UrlListRpcResponse &, int64_t,
       const std::vector<std::string> &,
       const std::map<std::string, std::string> &) override;
 
-  void GetExtendedUrls(std::vector<std::string> &, int64_t,
+  void GetExtendedUrls(UrlListRpcResponse &, int64_t,
                        const std::vector<std::string> &,
                        const std::map<std::string, std::string> &) override ;
 
@@ -68,10 +70,18 @@ std::string UrlShortenHandler::_GenRandomStr(int length) {
   return return_str;
 }
 void UrlShortenHandler::UploadUrls(
-    std::vector<std::string> &_return,
+    UrlListRpcResponse& response,
     int64_t req_id,
     const std::vector<std::string> &urls,
     const std::map<std::string, std::string> &carrier) {
+
+  std::vector<std::string> _return;
+  std::map<std::string, std::string>::const_iterator baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  XTRACE("UrlShortenHandler::UploadUrls", {{"RequestID", std::to_string(req_id)}});
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -86,6 +96,7 @@ void UrlShortenHandler::UploadUrls(
   std::vector<Url> target_urls;
   std::future<void> mongo_future;
 
+  Baggage mongo_baggage;
   if (!urls.empty()) {
     for (auto &url : urls) {
       Url new_target_url;
@@ -96,8 +107,11 @@ void UrlShortenHandler::UploadUrls(
       _return.emplace_back(new_target_url.shortened_url);
     }
 
+    mongo_baggage = BRANCH_CURRENT_BAGGAGE();
     mongo_future = std::async(
         std::launch::async, [&](){
+          BAGGAGE(mongo_baggage);  // automatically set / reinstate baggage on destructor
+
           mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
               _mongodb_client_pool);
           if (!mongodb_client) {
@@ -140,6 +154,7 @@ void UrlShortenHandler::UploadUrls(
             mongoc_bulk_operation_destroy(bulk);
             mongoc_collection_destroy(collection);
             mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+            XTRACE("Failed to insert urls to MongoDB");
             throw se;
           }
           bson_destroy (&reply);
@@ -149,22 +164,31 @@ void UrlShortenHandler::UploadUrls(
         });
   }
 
+  Baggage compose_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<void> compose_future = std::async(
       std::launch::async, [&]() {
+        BAGGAGE(compose_baggage);  // automatically set / reinstate baggage on destructor
+
         // Upload to compose post service
         auto compose_post_client_wrapper = _compose_client_pool->Pop();
         if (!compose_post_client_wrapper) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
-          se.message = "Failed to connect to compose-post-service";
+          se.message = "Failed to connected to compose-post-service";
+          XTRACE("Failed to connect to compose-post-service");
           throw se;
         }
         auto compose_post_client = compose_post_client_wrapper->GetClient();
         try {
-          compose_post_client->UploadUrls(req_id, target_urls, writer_text_map);
+          writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+          BaseRpcResponse cp_response;
+          compose_post_client->UploadUrls(cp_response, req_id, target_urls, writer_text_map);
+          Baggage b = Baggage::deserialize(response.baggage);
+          JOIN_CURRENT_BAGGAGE(b);
         } catch (...) {
           _compose_client_pool->Push(compose_post_client_wrapper);
           LOG(error) << "Failed to upload urls to compose-post-service";
+          XTRACE("Failed to upload urls to compose-post-service");
           throw;
         }
         _compose_client_pool->Push(compose_post_client_wrapper);
@@ -173,8 +197,10 @@ void UrlShortenHandler::UploadUrls(
   if (!urls.empty()) {
     try {
       mongo_future.get();
+      JOIN_CURRENT_BAGGAGE(mongo_baggage);
     } catch (...) {
       LOG(error) << "Failed to upload shortened urls from MongoDB";
+      XTRACE("Failed to upload shortened urls from MongoDB");
       throw;
     }
   }
@@ -182,16 +208,24 @@ void UrlShortenHandler::UploadUrls(
 
   try {
     compose_future.get();
+    JOIN_CURRENT_BAGGAGE(compose_baggage);
   } catch (...) {
     LOG(error) << "Failed to upload shortened urls from compose-post-service";
+    XTRACE("Failed to upload shortened urls from compose-post-service");
     throw;
   }
 
   span->Finish();
 
+  XTRACE("TextHandler::UploadText complete");
+
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  response.result = _return;
+  DELETE_CURRENT_BAGGAGE();
+
 }
 void UrlShortenHandler::GetExtendedUrls(
-    std::vector<std::string> &_return,
+    UrlListRpcResponse& response,
     int64_t req_id,
     const std::vector<std::string> &shortened_id,
     const std::map<std::string, std::string> &carrier) {

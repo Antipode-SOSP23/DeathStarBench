@@ -11,7 +11,7 @@ ARG LIB_CPP_REDIS_VERSION=4.3.1
 ARG LIB_AMQP_CPP_VERSION=4.1.4
 ARG LIB_SIMPLEAMQPCLIENT_VERSION=2.4.0
 
-ARG NUM_CPUS=40
+ARG NUM_CPUS=12
 ARG BUILD_DEPS="ca-certificates g++ cmake wget git libmemcached-dev automake bison flex libboost-all-dev libevent-dev libssl-dev libtool make pkg-config librabbitmq-dev"
 
 RUN apt-get update \
@@ -128,7 +128,32 @@ RUN apt-get update \
     cpp-jwt-${LIB_CPP_JWT_VERSION} \
     cpp_redis \
     AMQP-CPP \
-    SimpleAmqpClient \
+    SimpleAmqpClient
+
+RUN apt-get install -y lua5.1 lua5.1-dev
+
+RUN cd /tmp \ 
+  && wget https://github.com/google/protobuf/releases/download/v2.5.0/protobuf-2.5.0.tar.gz \
+  && gunzip protobuf-2.5.0.tar.gz \
+  && tar -xvf protobuf-2.5.0.tar \
+  && cd protobuf-2.5.0 \
+  && ./configure --prefix=/usr \
+  && make \
+  && make install \
+  # Install xtrace
+  && cd /tmp \
+  && git clone https://github.com/JonathanMace/xtrace-cpp.git \
+  && cd xtrace-cpp \
+  && mkdir build \
+  && cd build \
+  && cmake .. \
+  && make \
+  && make install \
+  && cd /tmp \
+  && rm -rf \
+      protobuf-2.5.0.tar \
+      protobuf-2.5.0 \
+      xtrace-cpp
 
 ENV LD_LIBRARY_PATH /usr/local/lib:${LD_LIBRARY_PATH}
 RUN ldconfig

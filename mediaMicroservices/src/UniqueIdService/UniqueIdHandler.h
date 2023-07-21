@@ -19,6 +19,8 @@
 #include "../ThriftClient.h"
 #include "../logger.h"
 #include "../tracing.h"
+#include <xtrace/xtrace.h>
+#include <xtrace/baggage.h>
 
 // Custom Epoch (January 1, 2018 Midnight GMT = 2018-01-01T00:00:00Z)
 #define CUSTOM_EPOCH 1514764800000
@@ -54,7 +56,7 @@ class UniqueIdHandler : public UniqueIdServiceIf {
       const std::string &,
       ClientPool<ThriftClient<ComposeReviewServiceClient>> *);
 
-  void UploadUniqueId(int64_t, const std::map<std::string, std::string> &) override;
+  void UploadUniqueId(BaseRpcResponse&, int64_t, const std::map<std::string, std::string> &) override;
 
  private:
   std::mutex *_thread_lock;
@@ -72,9 +74,19 @@ UniqueIdHandler::UniqueIdHandler(
 }
 
 void UniqueIdHandler::UploadUniqueId(
+    BaseRpcResponse & response,
     int64_t req_id,
     const std::map<std::string, std::string> & carrier) {
 
+  std::map<std::string, std::string>::const_iterator baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("UniqueIdHandler");
+  }
+  XTRACE("UniqueIdHandler::UploadUniqueId", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -117,25 +129,35 @@ void UniqueIdHandler::UploadUniqueId(
   int64_t review_id = stoul(review_id_str, nullptr, 16) & 0x7FFFFFFFFFFFFFFF;
   LOG(debug) << "The review_id of the request "
       << req_id << " is " << review_id;
+  XTRACE("The review_id of the request " + std::to_string(req_id) + " is " + std::to_string(review_id));
 
   auto compose_client_wrapper = _compose_client_pool->Pop();
   if (!compose_client_wrapper) {
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
     se.message = "Failed to connected to compose-review-service";
+    XTRACE("Failed to connect to compose-review-service");
     throw se;
   }
   auto compose_client = compose_client_wrapper->GetClient();
   try {
-    compose_client->UploadUniqueId(req_id, review_id, writer_text_map);
+    writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+    BaseRpcResponse response;
+    compose_client->UploadUniqueId(response, req_id, review_id, writer_text_map);
+    Baggage b = Baggage::deserialize(response.baggage);
+    JOIN_CURRENT_BAGGAGE(b);
   } catch (...) {
     _compose_client_pool->Push(compose_client_wrapper);
     LOG(error) << "Failed to upload movie_id to compose-review-service";
+    XTRACE("Failed to upload movie_id to compose-review-service");
     throw;
   }
   _compose_client_pool->Push(compose_client_wrapper);
 
   span->Finish();
+  XTRACE("UniqueIdHandler::UploadUniqueId complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  DELETE_CURRENT_BAGGAGE();
 }
 
 /*

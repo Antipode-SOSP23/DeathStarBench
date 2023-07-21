@@ -20,6 +20,8 @@
 #include "../ThriftClient.h"
 #include "../logger.h"
 #include "../tracing.h"
+#include <xtrace/xtrace.h>
+#include <xtrace/baggage.h>
 
 // Custom Epoch (January 1, 2018 Midnight GMT = 2018-01-01T00:00:00Z)
 #define CUSTOM_EPOCH 1514764800000
@@ -55,7 +57,7 @@ class UniqueIdHandler : public UniqueIdServiceIf {
       const std::string &,
       ClientPool<ThriftClient<ComposePostServiceClient>> *);
 
-  void UploadUniqueId(int64_t, PostType::type,
+  void UploadUniqueId(BaseRpcResponse &, int64_t, PostType::type,
       const std::map<std::string, std::string> &) override;
 
  private:
@@ -74,10 +76,21 @@ UniqueIdHandler::UniqueIdHandler(
 }
 
 void UniqueIdHandler::UploadUniqueId(
+    BaseRpcResponse &response,
     int64_t req_id,
     PostType::type post_type,
     const std::map<std::string, std::string> & carrier) {
 
+  auto baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("UniqueIdHandler");
+  }
+
+  XTRACE("UniqueIdHandler::UploadUniqueId", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -122,24 +135,35 @@ void UniqueIdHandler::UploadUniqueId(
       << req_id << " is " << post_id;
 
   // Upload to compose post service
+  XTRACE("Uploading unique ID to compose post service");
   auto compose_post_client_wrapper = _compose_client_pool->Pop();
   if (!compose_post_client_wrapper) {
     ServiceException se;
     se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
     se.message = "Failed to connect to compose-post-service";
+    XTRACE("Failed to connect to compose-post-service");
     throw se;
   }
   auto compose_post_client = compose_post_client_wrapper->GetClient();
   try {
-    compose_post_client->UploadUniqueId(req_id, post_id, post_type, writer_text_map);    
+    writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+    BaseRpcResponse cp_response;
+    compose_post_client->UploadUniqueId(cp_response, req_id, post_id, post_type, writer_text_map);    
+    Baggage b = Baggage::deserialize(cp_response.baggage);
+    JOIN_CURRENT_BAGGAGE(b);
   } catch (...) {
     _compose_client_pool->Push(compose_post_client_wrapper);
     LOG(error) << "Failed to upload unique-id to compose-post-service";
+    XTRACE("Failed to upload unique-id to compose-post-service");
     throw;
   }
   _compose_client_pool->Push(compose_post_client_wrapper);
 
   span->Finish();
+
+  XTRACE("UniqueIdHandler::UploadUniqueId complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  DELETE_CURRENT_BAGGAGE();
 }
 
 /*

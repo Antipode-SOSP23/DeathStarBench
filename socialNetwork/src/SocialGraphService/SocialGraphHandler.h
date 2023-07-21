@@ -18,6 +18,8 @@
 #include "../tracing.h"
 #include "../RedisClient.h"
 #include "../ThriftClient.h"
+#include <xtrace/xtrace.h>
+#include <xtrace/baggage.h>
 
 namespace social_network {
 
@@ -32,19 +34,19 @@ class SocialGraphHandler : public SocialGraphServiceIf {
       ClientPool<RedisClient> *,
       ClientPool<ThriftClient<UserServiceClient>> *);
   ~SocialGraphHandler() override = default;
-  void GetFollowers(std::vector<int64_t> &, int64_t, int64_t,
+  void GetFollowers(UidListRpcResponse &, int64_t, int64_t,
                     const std::map<std::string, std::string> &) override;
-  void GetFollowees(std::vector<int64_t> &, int64_t, int64_t,
+  void GetFollowees(UidListRpcResponse &, int64_t, int64_t,
                     const std::map<std::string, std::string> &) override;
-  void Follow(int64_t, int64_t, int64_t,
+  void Follow(BaseRpcResponse &, int64_t, int64_t, int64_t,
               const std::map<std::string, std::string> &) override;
-  void Unfollow(int64_t, int64_t, int64_t,
+  void Unfollow(BaseRpcResponse &, int64_t, int64_t, int64_t,
                 const std::map<std::string, std::string> &) override;
-  void FollowWithUsername(int64_t, const std::string &, const std::string &,
+  void FollowWithUsername(BaseRpcResponse &, int64_t, const std::string &, const std::string &,
               const std::map<std::string, std::string> &) override;
-  void UnfollowWithUsername(int64_t, const std::string &, const std::string &,
+  void UnfollowWithUsername(BaseRpcResponse &, int64_t, const std::string &, const std::string &,
                 const std::map<std::string, std::string> &) override;
-  void InsertUser(int64_t, int64_t,
+  void InsertUser(BaseRpcResponse&, int64_t, int64_t,
                   const std::map<std::string, std::string> &) override;
 
 
@@ -64,11 +66,22 @@ SocialGraphHandler::SocialGraphHandler(
 }
 
 void SocialGraphHandler::Follow(
+    BaseRpcResponse &response,
     int64_t req_id,
     int64_t user_id,
     int64_t followee_id,
     const std::map<std::string, std::string> &carrier) {
 
+  auto baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("SocialGraphHandler");
+  }
+
+  XTRACE("SocialGraphHandler::Follow", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -82,14 +95,17 @@ void SocialGraphHandler::Follow(
   int64_t timestamp = duration_cast<milliseconds>(
       system_clock::now().time_since_epoch()).count();
 
+  Baggage mongo_update_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<void> mongo_update_follower_future = std::async(
       std::launch::async, [&]() {
+        BAGGAGE(mongo_update_baggage);
         mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
             _mongodb_client_pool);
         if (!mongodb_client) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_MONGODB_ERROR;
           se.message = "Failed to pop a client from MongoDB pool";
+          XTRACE("Failed to pop a client from MongoDB pool");
           throw se;
         }
         auto collection = mongoc_client_get_collection(
@@ -99,10 +115,12 @@ void SocialGraphHandler::Follow(
           se.errorCode = ErrorCode::SE_MONGODB_ERROR;
           se.message = "Failed to create collection social_graph from MongoDB";
           mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+          XTRACE("Failed to create collection social_graph from MongoDB");
           throw se;
         }
 
         // Update follower->followee edges
+        XTRACE("Updating follower->followee edges");
         const bson_t *doc;
         bson_t *search_not_exist = BCON_NEW(
             "$and", "[",
@@ -124,6 +142,7 @@ void SocialGraphHandler::Follow(
         );
         bson_error_t error;
         bson_t reply;
+        XTRACE("MongoUpdateFollower start");
         auto update_span = opentracing::Tracer::Global()->StartSpan(
             "MongoUpdateFollower", {opentracing::ChildOf(&span->context())});
         bool updated = mongoc_collection_find_and_modify(
@@ -148,6 +167,7 @@ void SocialGraphHandler::Follow(
           bson_destroy(search_not_exist);
           mongoc_collection_destroy(collection);
           mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+          XTRACE("Failed to update social graph for user");
           throw se;
         }
         update_span->Finish();
@@ -156,16 +176,20 @@ void SocialGraphHandler::Follow(
         bson_destroy(search_not_exist);
         mongoc_collection_destroy(collection);
         mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+        XTRACE("MongoUpdateFollower complete");
       });
 
+  Baggage mongo_update_followee_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<void> mongo_update_followee_future = std::async(
       std::launch::async, [&]() {
+        BAGGAGE(mongo_update_followee_baggage);
         mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
             _mongodb_client_pool);
         if (!mongodb_client) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_MONGODB_ERROR;
           se.message = "Failed to pop a client from MongoDB pool";
+          XTRACE("Failed to pop a client from MongoDB pool");
           throw se;
         }
         auto collection = mongoc_client_get_collection(
@@ -174,6 +198,7 @@ void SocialGraphHandler::Follow(
           ServiceException se;
           se.errorCode = ErrorCode::SE_MONGODB_ERROR;
           se.message = "Failed to create collection social_graph from MongoDB";
+          XTRACE("Failed to create collection social_graph from MongoDB");
           mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
           throw se;
         }
@@ -189,6 +214,7 @@ void SocialGraphHandler::Follow(
             "timestamp", BCON_INT64(timestamp), "}", "}"
         );
         bson_error_t error;
+        XTRACE("MongoUpdateFollowee start");
         auto update_span = opentracing::Tracer::Global()->StartSpan(
             "MongoUpdateFollowee", {opentracing::ChildOf(&span->context())});
         bson_t reply;
@@ -206,9 +232,11 @@ void SocialGraphHandler::Follow(
           bson_destroy(search_not_exist);
           mongoc_collection_destroy(collection);
           mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+          XTRACE("Failed to update social graph for user");
           throw se;
         }
         update_span->Finish();
+        XTRACE("MongoUpdateFollowee complete");
         bson_destroy(update);
         bson_destroy(&reply);
         bson_destroy(search_not_exist);
@@ -216,17 +244,21 @@ void SocialGraphHandler::Follow(
         mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       });
 
+  Baggage redis_update_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<void> redis_update_future = std::async(
       std::launch::async, [&]() {
+        BAGGAGE(redis_update_baggage);
         auto redis_client_wrapper = _redis_client_pool->Pop();
         if (!redis_client_wrapper) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_REDIS_ERROR;
           se.message = "Cannot connect to Redis server";
+          XTRACE("Cannot connect to Redis server");
           throw se;
         }
         auto redis_client = redis_client_wrapper->GetClient();
 
+        XTRACE("RedisUpdate start");
         auto redis_span = opentracing::Tracer::Global()->StartSpan(
             "RedisUpdate", {opentracing::ChildOf(&span->context())});
         auto num_followee = redis_client->zcard(
@@ -253,24 +285,43 @@ void SocialGraphHandler::Follow(
         redis_client->sync_commit();
         _redis_client_pool->Push(redis_client_wrapper);
         redis_span->Finish();
+        XTRACE("RedisUpdate complete");
       });
 
   try {
     redis_update_future.get();
+    JOIN_CURRENT_BAGGAGE(redis_update_baggage);
     mongo_update_follower_future.get();
+    JOIN_CURRENT_BAGGAGE(mongo_update_baggage);
     mongo_update_followee_future.get();
+    JOIN_CURRENT_BAGGAGE(mongo_update_followee_baggage);
   } catch (...) {
     throw;
   }
 
   span->Finish();
+  XTRACE("SocialGraphHandler::Follow complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  DELETE_CURRENT_BAGGAGE();
 }
 
 void SocialGraphHandler::Unfollow(
+    BaseRpcResponse& response,
     int64_t req_id,
     int64_t user_id,
     int64_t followee_id,
     const std::map<std::string, std::string> &carrier) {
+  
+  auto baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("SocialGraphHandler");
+  }
+
+  XTRACE("SocialGraphHandler::Unfollow", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -281,14 +332,17 @@ void SocialGraphHandler::Unfollow(
       {opentracing::ChildOf(parent_span->get())});
   opentracing::Tracer::Global()->Inject(span->context(), writer);
 
+  Baggage mongo_update_follower_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<void> mongo_update_follower_future = std::async(
       std::launch::async, [&]() {
+        BAGGAGE(mongo_update_follower_baggage);
         mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
             _mongodb_client_pool);
         if (!mongodb_client) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_MONGODB_ERROR;
           se.message = "Failed to pop a client from MongoDB pool";
+          XTRACE("Failed to pop a client from MongoDB pool");
           throw se;
         }
         auto collection = mongoc_client_get_collection(
@@ -297,6 +351,7 @@ void SocialGraphHandler::Unfollow(
           ServiceException se;
           se.errorCode = ErrorCode::SE_MONGODB_ERROR;
           se.message = "Failed to create collection social_graph from MongoDB";
+          XTRACE("Failed to pop a client from MongoDB pool");
           mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
           throw se;
         }
@@ -310,6 +365,7 @@ void SocialGraphHandler::Unfollow(
         );
         bson_t reply;
         bson_error_t error;
+        XTRACE("MongoDeleteFollowee start");
         auto update_span = opentracing::Tracer::Global()->StartSpan(
             "MongoDeleteFollowee", {opentracing::ChildOf(&span->context())});
         bool updated = mongoc_collection_find_and_modify(
@@ -326,9 +382,11 @@ void SocialGraphHandler::Unfollow(
           bson_destroy(&reply);
           mongoc_collection_destroy(collection);
           mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+          XTRACE("Failed to delete social graph for user " + std::to_string(user_id));
           throw se;
         }
         update_span->Finish();
+        XTRACE("MongoDeleteFollowee compelte");
         bson_destroy(update);
         bson_destroy(query);
         bson_destroy(&reply);
@@ -336,14 +394,17 @@ void SocialGraphHandler::Unfollow(
         mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       });
 
+  Baggage mongo_update_followee_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<void> mongo_update_followee_future = std::async(
       std::launch::async, [&]() {
+        BAGGAGE(mongo_update_followee_baggage);
         mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
             _mongodb_client_pool);
         if (!mongodb_client) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_MONGODB_ERROR;
           se.message = "Failed to pop a client from MongoDB pool";
+          XTRACE("Failed to pop a client from MongoDB pool");
           throw se;
         }
         auto collection = mongoc_client_get_collection(
@@ -352,6 +413,7 @@ void SocialGraphHandler::Unfollow(
           ServiceException se;
           se.errorCode = ErrorCode::SE_MONGODB_ERROR;
           se.message = "Failed to create collection social_graph from MongoDB";
+          XTRACE("Failed to create collection social_graph from MongoDB");
           mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
           throw se;
         }
@@ -365,6 +427,7 @@ void SocialGraphHandler::Unfollow(
         );
         bson_t reply;
         bson_error_t error;
+        XTRACE("MongoDeleteFollower start");
         auto update_span = opentracing::Tracer::Global()->StartSpan(
             "MongoDeleteFollower", {opentracing::ChildOf(&span->context())});
         bool updated = mongoc_collection_find_and_modify(
@@ -381,9 +444,11 @@ void SocialGraphHandler::Unfollow(
           bson_destroy(&reply);
           mongoc_collection_destroy(collection);
           mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+          XTRACE("Failed to delete social graph for user " + std::to_string(followee_id));
           throw se;
         }
         update_span->Finish();
+        XTRACE("MongoDeleteFollower complete");
         bson_destroy(update);
         bson_destroy(query);
         bson_destroy(&reply);
@@ -391,17 +456,21 @@ void SocialGraphHandler::Unfollow(
         mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       });
 
+  Baggage redis_update_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<void> redis_update_future = std::async(
       std::launch::async, [&]() {
+        BAGGAGE(redis_update_baggage);
         auto redis_client_wrapper = _redis_client_pool->Pop();
         if (!redis_client_wrapper) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_REDIS_ERROR;
           se.message = "Cannot connect to Redis server";
+          XTRACE("Cannot connect to Redis server");
           throw se;
         }
         auto redis_client = redis_client_wrapper->GetClient();
 
+        XTRACE("RedisUpdate start");
         auto redis_span = opentracing::Tracer::Global()->StartSpan(
             "RedisUpdate", {opentracing::ChildOf(&span->context())});
         auto num_followee = redis_client->zcard(
@@ -425,24 +494,41 @@ void SocialGraphHandler::Unfollow(
         redis_client->sync_commit();
         _redis_client_pool->Push(redis_client_wrapper);
         redis_span->Finish();
+        XTRACE("RedisUpdate complete");
       });
 
   try {
     redis_update_future.get();
+    JOIN_CURRENT_BAGGAGE(redis_update_baggage);
     mongo_update_follower_future.get();
+    JOIN_CURRENT_BAGGAGE(mongo_update_follower_baggage);
     mongo_update_followee_future.get();
+    JOIN_CURRENT_BAGGAGE(mongo_update_followee_baggage);
   } catch (...) {
     throw;
   }
 
   span->Finish();
-
+  XTRACE("SocialGraphHandler::Unfollow complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  DELETE_CURRENT_BAGGAGE();
 }
 
 void SocialGraphHandler::GetFollowers(
-    std::vector<int64_t> &_return, const int64_t req_id, const int64_t user_id,
+    UidListRpcResponse &response, const int64_t req_id, const int64_t user_id,
     const std::map<std::string, std::string> &carrier) {
 
+  std::vector<int64_t> _return;
+  auto baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("SocialGraphHandler");
+  }
+
+  XTRACE("SocialGraphHandler::GetFollowers", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -458,10 +544,12 @@ void SocialGraphHandler::GetFollowers(
     ServiceException se;
     se.errorCode = ErrorCode::SE_REDIS_ERROR;
     se.message = "Cannot connect to Redis server";
+    XTRACE("Cannot connect to Redis server");
     throw se;
   }
   auto redis_client = redis_client_wrapper->GetClient();
 
+  XTRACE("RedisGet start");
   auto redis_span = opentracing::Tracer::Global()->StartSpan(
       "RedisGet", {opentracing::ChildOf(&span->context())});
   auto num_follower = redis_client->zcard(
@@ -474,6 +562,7 @@ void SocialGraphHandler::GetFollowers(
     auto redis_followers = redis_client->zrange(key, 0, -1, false);
     redis_client->sync_commit();
     redis_span->Finish();
+    XTRACE("RedisGet complete");
     auto redis_followers_reply = redis_followers.get();
     if (redis_followers_reply.ok()) {
       auto followers_str = redis_followers_reply.as_array();
@@ -487,10 +576,12 @@ void SocialGraphHandler::GetFollowers(
       se.message = "Failed to get followers from Redis";
       se.errorCode = ErrorCode::SE_REDIS_ERROR;
       _redis_client_pool->Push(redis_client_wrapper);
+      XTRACE("Failed to get followers from Redis");
       throw se;
     }
   } else {
     redis_span->Finish();
+    XTRACE("RedisGet complete");
     _redis_client_pool->Push(redis_client_wrapper);
     mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
         _mongodb_client_pool);
@@ -498,6 +589,7 @@ void SocialGraphHandler::GetFollowers(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to pop a client from MongoDB pool";
+      XTRACE("Failed to pop a client from MongoDB pool");
       throw se;
     }
     auto collection = mongoc_client_get_collection(
@@ -506,11 +598,13 @@ void SocialGraphHandler::GetFollowers(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to create collection social_graph from MongoDB";
+      XTRACE("Failed to create collection social_graph from MongoDB");
       mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       throw se;
     }
     bson_t *query = bson_new();
     BSON_APPEND_INT64(query, "user_id", user_id);
+    XTRACE("MongoFindUser start");
     auto find_span = opentracing::Tracer::Global()->StartSpan(
         "MongoFindUser", {opentracing::ChildOf(&span->context())});
     mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
@@ -549,6 +643,7 @@ void SocialGraphHandler::GetFollowers(
         index++;
       }
       find_span->Finish();
+      XTRACE("MongoFindUser complete");
       bson_destroy(query);
       mongoc_cursor_destroy(cursor);
       mongoc_collection_destroy(collection);
@@ -556,6 +651,7 @@ void SocialGraphHandler::GetFollowers(
 
       redis_client_wrapper = _redis_client_pool->Pop();
       redis_client = redis_client_wrapper->GetClient();
+      XTRACE("RedistInsert start");
       auto redis_insert_span = opentracing::Tracer::Global()->StartSpan(
           "RedisInsert", {opentracing::ChildOf(&span->context())});
       std::string key = std::to_string(user_id) + ":followers";
@@ -563,9 +659,11 @@ void SocialGraphHandler::GetFollowers(
       redis_client->zadd(key, options, redis_zset);
       redis_client->sync_commit();
       redis_insert_span->Finish();
+      XTRACE("RedisInsert complete");
       _redis_client_pool->Push(redis_client_wrapper);
     } else {
       find_span->Finish();
+      XTRACE("MongoFindUser complete");
       bson_destroy(query);
       mongoc_cursor_destroy(cursor);
       mongoc_collection_destroy(collection);
@@ -573,12 +671,27 @@ void SocialGraphHandler::GetFollowers(
     }
   }
   span->Finish();
+  XTRACE("SocialGraphHandler::GetFollowers complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  response.result = _return;
+  DELETE_CURRENT_BAGGAGE();
 }
 
 void SocialGraphHandler::GetFollowees(
-    std::vector<int64_t> &_return, const int64_t req_id, const int64_t user_id,
+    UidListRpcResponse& response, const int64_t req_id, const int64_t user_id,
     const std::map<std::string, std::string> &carrier) {
 
+  std::vector<int64_t> _return;
+  auto baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("SocialGraphHandler");
+  }
+
+  XTRACE("SocialGraphHandler::GetFollowees", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -594,10 +707,12 @@ void SocialGraphHandler::GetFollowees(
     ServiceException se;
     se.errorCode = ErrorCode::SE_REDIS_ERROR;
     se.message = "Cannot connect to Redis server";
+    XTRACE("Cannot connect to Redis server");
     throw se;
   }
   auto redis_client = redis_client_wrapper->GetClient();
 
+  XTRACE("RedisGet start");
   auto redis_span = opentracing::Tracer::Global()->StartSpan(
       "RedisGet", {opentracing::ChildOf(&span->context())});
   auto num_followees = redis_client->zcard(
@@ -610,6 +725,7 @@ void SocialGraphHandler::GetFollowees(
     auto redis_followees = redis_client->zrange(key, 0, -1, false);
     redis_client->sync_commit();
     redis_span->Finish();
+    XTRACE("RedisGet complete");
     auto redis_followees_reply = redis_followees.get();
     if (redis_followees_reply.ok()) {
       auto followees_str = redis_followees_reply.as_array();
@@ -622,17 +738,20 @@ void SocialGraphHandler::GetFollowees(
       ServiceException se;
       se.message = "Failed to get followees from Redis";
       se.errorCode = ErrorCode::SE_REDIS_ERROR;
+      XTRACE("Failed to get followees from Redis");
       _redis_client_pool->Push(redis_client_wrapper);
       throw se;
     }
   } else {
     redis_span->Finish();
+    XTRACE("RedisGet complete");
     mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
         _mongodb_client_pool);
     if (!mongodb_client) {
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to pop a client from MongoDB pool";
+      XTRACE("Failed to pop a client from MongoDB pool");
       throw se;
     }
     auto collection = mongoc_client_get_collection(
@@ -641,11 +760,13 @@ void SocialGraphHandler::GetFollowees(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to create collection social_graph from MongoDB";
+      XTRACE("Failed to create collection social_graph from MongoDB");
       mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       throw se;
     }
     bson_t *query = bson_new();
     BSON_APPEND_INT64(query, "user_id", user_id);
+    XTRACE("MongoFindUser start");
     auto find_span = opentracing::Tracer::Global()->StartSpan(
         "MongoFindUser", {opentracing::ChildOf(&span->context())});
     mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
@@ -660,6 +781,7 @@ void SocialGraphHandler::GetFollowees(
       mongoc_cursor_destroy(cursor);
       mongoc_collection_destroy(collection);
       mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+      XTRACE("Cannot find user_id in MongoDB");
       throw se;
     } else {
       bson_iter_t iter_0;
@@ -693,12 +815,14 @@ void SocialGraphHandler::GetFollowees(
         index++;
       }
       find_span->Finish();
+      XTRACE("MongoFindUser complete");
       bson_destroy(query);
       mongoc_cursor_destroy(cursor);
       mongoc_collection_destroy(collection);
       mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       redis_client_wrapper = _redis_client_pool->Pop();
       redis_client = redis_client_wrapper->GetClient();
+      XTRACE("RedisInsert start");
       auto redis_insert_span = opentracing::Tracer::Global()->StartSpan(
           "RedisInsert", {opentracing::ChildOf(&span->context())});
       std::string key = std::to_string(user_id) + ":followees";
@@ -706,16 +830,32 @@ void SocialGraphHandler::GetFollowees(
       redis_client->zadd(key, options, redis_zset);
       redis_client->sync_commit();
       redis_insert_span->Finish();
+      XTRACE("RedisInsert complete");
       _redis_client_pool->Push(redis_client_wrapper);
     }
   }
   span->Finish();
+  XTRACE("SocialGraphHandler::GetFollowees complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  response.result = _return;
+  DELETE_CURRENT_BAGGAGE();
 }
 
 void SocialGraphHandler::InsertUser(
+    BaseRpcResponse& response,
     int64_t req_id, int64_t user_id,
     const std::map<std::string, std::string> &carrier) {
 
+  auto baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("SocialGraphHandler");
+  }
+
+  XTRACE("SocialGraphHandler::InsertUser", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -732,6 +872,7 @@ void SocialGraphHandler::InsertUser(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to pop a client from MongoDB pool";
+    XTRACE("Failed to pop a client from MongoDB pool");
     throw se;
   }
   auto collection = mongoc_client_get_collection(
@@ -740,6 +881,7 @@ void SocialGraphHandler::InsertUser(
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = "Failed to create collection social_graph from MongoDB";
+    XTRACE("Failed to create collection social_graph from MongoDB");
     mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
     throw se;
   }
@@ -750,11 +892,13 @@ void SocialGraphHandler::InsertUser(
       "followees", "[", "]"
   );
   bson_error_t error;
+  XTRACE("MongoInsertUser start");
   auto insert_span = opentracing::Tracer::Global()->StartSpan(
       "MongoInsertUser", {opentracing::ChildOf(&span->context())});
   bool inserted = mongoc_collection_insert_one(
       collection, new_doc, nullptr, nullptr, &error);
   insert_span->Finish();
+  XTRACE("MongoInsertUser complete");
   if (!inserted) {
     LOG(error) << "Failed to insert social graph for user "
                << user_id << " to MongoDB: " << error.message;
@@ -763,21 +907,37 @@ void SocialGraphHandler::InsertUser(
     se.message = error.message;
     bson_destroy(new_doc);
     mongoc_collection_destroy(collection);
+    XTRACE("Failed to insert social graph for user " + std::to_string(user_id));
     mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
     throw se;
   }
   bson_destroy(new_doc);
   mongoc_collection_destroy(collection);
   mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+
   span->Finish();
+  XTRACE("SocialGraphHandler::InsertUser complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  DELETE_CURRENT_BAGGAGE();
 }
 
 void SocialGraphHandler::FollowWithUsername(
+    BaseRpcResponse &response,
     int64_t req_id,
     const std::string &user_name,
     const std::string &followee_name,
     const std::map<std::string, std::string> &carrier) {
 
+  auto baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("SocialGraphHandler");
+  }
+
+  XTRACE("SocialGraphHandler::FollowWithUsername", {{"RequestID", std::to_string(req_id)}});
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -788,44 +948,62 @@ void SocialGraphHandler::FollowWithUsername(
       {opentracing::ChildOf(parent_span->get())});
   opentracing::Tracer::Global()->Inject(span->context(), writer);
 
+  Baggage user_id_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<int64_t> user_id_future = std::async(
       std::launch::async,[&]() {
+        BAGGAGE(user_id_baggage);
         auto user_client_wrapper = _user_service_client_pool->Pop();
         if (!user_client_wrapper) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
           se.message = "Failed to connect to social-graph-service";
+          XTRACE("Failed to connect to social-graph-service");
           throw se;
         }
         auto user_client = user_client_wrapper->GetClient();
         int64_t _return;
         try {
-          _return = user_client->GetUserId(req_id, user_name, writer_text_map);
+          writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+          UserIdRpcResponse uid_response;
+          user_client->GetUserId(uid_response, req_id, user_name, writer_text_map);
+          Baggage b = Baggage::deserialize(uid_response.baggage);
+          JOIN_CURRENT_BAGGAGE(b);
+          _return = uid_response.result;
         } catch (...) {
           _user_service_client_pool->Push(user_client_wrapper);
           LOG(error) << "Failed to get user_id from user-service";
+          XTRACE("Failed to get user_id from user-service");
           throw;
         }        
         _user_service_client_pool->Push(user_client_wrapper);
         return _return;
       });
 
+  Baggage followee_id_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<int64_t> followee_id_future = std::async(
       std::launch::async,[&]() {
+        BAGGAGE(followee_id_baggage);
         auto user_client_wrapper = _user_service_client_pool->Pop();
         if (!user_client_wrapper) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
-          se.message = "Failed to connect to social-graph-service";
+          se.message = "Failed to connected to social-graph-service";
+          XTRACE("Failed to connect to social-graph-service");
           throw se;
         }
         auto user_client = user_client_wrapper->GetClient();
         int64_t _return;
         try {
-          _return = user_client->GetUserId(req_id, followee_name, writer_text_map);
+          writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+          UserIdRpcResponse uid_response;
+          user_client->GetUserId(uid_response,req_id, followee_name, writer_text_map);
+          Baggage b = Baggage::deserialize(uid_response.baggage);
+          JOIN_CURRENT_BAGGAGE(b);
+          _return = uid_response.result;
         } catch (...) {
           _user_service_client_pool->Push(user_client_wrapper);
           LOG(error) << "Failed to get user_id from user-service";
+          XTRACE("Failed to get user_id from user-service");
           throw;
         }
         _user_service_client_pool->Push(user_client_wrapper);
@@ -836,27 +1014,47 @@ void SocialGraphHandler::FollowWithUsername(
   int64_t followee_id;
   try {
     user_id = user_id_future.get();
+    JOIN_CURRENT_BAGGAGE(user_id_baggage);
     followee_id = followee_id_future.get();
+    JOIN_CURRENT_BAGGAGE(followee_id_baggage);
   } catch (...) {
     throw;
   }
 
   if (user_id >= 0 && followee_id >= 0) {
     try {
-      Follow(req_id, user_id, followee_id, writer_text_map);
+      writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+      Follow(response, req_id, user_id, followee_id, writer_text_map);
+      Baggage b = Baggage::deserialize(response.baggage);
+      JOIN_CURRENT_BAGGAGE(b);
     } catch (...) {
       throw;
     }
   }
   span->Finish();
+  XTRACE("SocialGraphHandler::FollowWithUsername complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  DELETE_CURRENT_BAGGAGE();
 }
 
 void SocialGraphHandler::UnfollowWithUsername(
+    BaseRpcResponse& response,
     int64_t req_id,
     const std::string &user_name,
     const std::string &followee_name,
     const std::map<std::string, std::string> &carrier) {
-// Initialize a span
+  
+  auto baggage_it = carrier.find("baggage");
+  if (baggage_it != carrier.end()) {
+    SET_CURRENT_BAGGAGE(Baggage::deserialize(baggage_it->second));
+  }
+
+  if (!XTrace::IsTracing()) {
+    XTrace::StartTrace("SocialGraphHandler");
+  }
+
+  XTRACE("SocialGraphHandler::UnfollowWithUsername", {{"RequestID", std::to_string(req_id)}});
+  // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
   TextMapWriter writer(writer_text_map);
@@ -866,44 +1064,62 @@ void SocialGraphHandler::UnfollowWithUsername(
       {opentracing::ChildOf(parent_span->get())});
   opentracing::Tracer::Global()->Inject(span->context(), writer);
 
+  Baggage user_id_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<int64_t> user_id_future = std::async(
       std::launch::async,[&]() {
+        BAGGAGE(user_id_baggage);
         auto user_client_wrapper = _user_service_client_pool->Pop();
         if (!user_client_wrapper) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
           se.message = "Failed to connect to social-graph-service";
+          XTRACE("Failed to connect to social-graph-service");
           throw se;
         }
         auto user_client = user_client_wrapper->GetClient();
         int64_t _return;
         try {
-          _return = user_client->GetUserId(req_id, user_name, writer_text_map);
+          writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+          UserIdRpcResponse uid_response;
+          user_client->GetUserId(uid_response, req_id, user_name, writer_text_map);
+          Baggage b = Baggage::deserialize(uid_response.baggage);
+          JOIN_CURRENT_BAGGAGE(b);
+          _return = uid_response.result;
         } catch (...) {
           _user_service_client_pool->Push(user_client_wrapper);
           LOG(error) << "Failed to get user_id from user-service";
+          XTRACE("Failed to get user_id from user-service");
           throw;
         }
         _user_service_client_pool->Push(user_client_wrapper);
         return _return;
       });
 
+  Baggage followee_id_baggage = BRANCH_CURRENT_BAGGAGE();
   std::future<int64_t> followee_id_future = std::async(
       std::launch::async,[&]() {
+        BAGGAGE(followee_id_baggage);
         auto user_client_wrapper = _user_service_client_pool->Pop();
         if (!user_client_wrapper) {
           ServiceException se;
           se.errorCode = ErrorCode::SE_THRIFT_CONN_ERROR;
           se.message = "Failed to connect to social-graph-service";
+          XTRACE("Failed to connect to social-graph-service");
           throw se;
         }
         auto user_client = user_client_wrapper->GetClient();
         int64_t _return;
         try {
-          _return = user_client->GetUserId(req_id, followee_name, writer_text_map);
+          writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+          UserIdRpcResponse uid_response;
+          user_client->GetUserId(uid_response, req_id, followee_name, writer_text_map);
+          Baggage b = Baggage::deserialize(uid_response.baggage);
+          JOIN_CURRENT_BAGGAGE(b);
+          _return = uid_response.result;
         } catch (...) {
           _user_service_client_pool->Push(user_client_wrapper);
           LOG(error) << "Failed to get user_id from user-service";
+          XTRACE("Failed to get user_id from user-service");
           throw;
         }        
         _user_service_client_pool->Push(user_client_wrapper);
@@ -914,19 +1130,27 @@ void SocialGraphHandler::UnfollowWithUsername(
   int64_t followee_id;
   try {
     user_id = user_id_future.get();
+    JOIN_CURRENT_BAGGAGE(user_id_baggage);
     followee_id = followee_id_future.get();
+    JOIN_CURRENT_BAGGAGE(followee_id_baggage);
   } catch (...) {
     throw;
   }
 
   if (user_id >= 0 && followee_id >= 0) {
     try {
-      Unfollow(req_id, user_id, followee_id, writer_text_map);
+      writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+      Unfollow(response, req_id, user_id, followee_id, writer_text_map);
+      Baggage b = Baggage::deserialize(response.baggage);
+      JOIN_CURRENT_BAGGAGE(b);
     } catch (...) {
       throw;
     }
   }
   span->Finish();
+  XTRACE("SocialGraphService::UnfollowWithUsername complete");
+  response.baggage = GET_CURRENT_BAGGAGE().str();
+  DELETE_CURRENT_BAGGAGE();
 }
 
 } // namespace social_network
