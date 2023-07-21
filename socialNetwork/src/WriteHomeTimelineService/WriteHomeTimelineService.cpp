@@ -34,8 +34,7 @@ void OnReceivedWorker(const AMQP::Message &msg) {
     json msg_json = json::parse(std::string(msg.body(), msg.bodySize()));
 
     std::map<std::string, std::string> carrier;
-    for (auto it = msg_json["carrier"].begin();
-        it != msg_json["carrier"].end(); ++it) {
+    for (auto it = msg_json["carrier"].begin(); it != msg_json["carrier"].end(); ++it) {
       carrier.emplace(std::make_pair(it.key(), it.value()));
     }
 
@@ -67,8 +66,7 @@ void OnReceivedWorker(const AMQP::Message &msg) {
     auto social_graph_client = social_graph_client_wrapper->GetClient();
     std::vector<int64_t> followers_id;
     try {
-      social_graph_client->GetFollowers(followers_id, req_id, user_id,
-                                        writer_text_map);
+      social_graph_client->GetFollowers(followers_id, req_id, user_id, writer_text_map);
     } catch (...) {
       LOG(error) << "Failed to get followers from social-network-service";
       _social_graph_client_pool->Push(social_graph_client_wrapper);
@@ -76,8 +74,7 @@ void OnReceivedWorker(const AMQP::Message &msg) {
     }
     _social_graph_client_pool->Push(social_graph_client_wrapper);
 
-    std::set<int64_t> followers_id_set(followers_id.begin(),
-        followers_id.end());
+    std::set<int64_t> followers_id_set(followers_id.begin(), followers_id.end());
     followers_id_set.insert(user_mentions_id.begin(), user_mentions_id.end());
 
     // Update Redis ZSet
@@ -121,8 +118,8 @@ void HeartbeatSend(AmqpLibeventHandler &handler,
 
 void WorkerThread(std::string &addr, int port) {
   AmqpLibeventHandler handler;
-  AMQP::TcpConnection connection(handler, AMQP::Address(
-      addr, port, AMQP::Login("guest", "guest"), "/"));
+
+  AMQP::TcpConnection connection(handler, AMQP::Address(addr, port, AMQP::Login("admin", "admin"), "/"));
   AMQP::TcpChannel channel(&connection);
   channel.onError(
       [&handler](const char *message) {
@@ -140,9 +137,8 @@ void WorkerThread(std::string &addr, int port) {
         OnReceivedWorker(msg);
       });
 
-
   std::thread heartbeat_thread(HeartbeatSend, std::ref(handler),
-      std::ref(connection), 30);
+      std::ref(connection), 60);
   heartbeat_thread.detach();
   handler.Start();
   LOG(debug) << "Closing connection.";

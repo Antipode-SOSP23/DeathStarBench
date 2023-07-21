@@ -96,6 +96,8 @@ function _M.ReadHomeTimeline()
     local status, ret = pcall(client.ReadHomeTimeline, client, req_id,
         user_id, tonumber(args.start), tonumber(args.stop), carrier)
     GenericObjectPool:returnConnection(client)
+
+    span:finish()
     if not status then
       ngx.status = ngx.HTTP_INTERNAL_SERVER_ERROR
       if (ret.message) then
@@ -109,7 +111,7 @@ function _M.ReadHomeTimeline()
     else
       local home_timeline = _LoadTimeline(ret)
       ngx.header.content_type = "application/json; charset=utf-8"
-      ngx.say(cjson.encode(home_timeline) )
+      ngx.say(cjson.encode(home_timeline))
     end
   end
 end

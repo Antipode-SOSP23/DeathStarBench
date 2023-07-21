@@ -279,11 +279,11 @@ service UrlShortenService {
       3: map<string, string> carrier
   ) throws (1: ServiceException se)
 
-    list<string> GetExtendedUrls(
-        1: i64 req_id,
-        2: list<string> shortened_urls,
-        3: map<string, string> carrier
-    ) throws (1: ServiceException se)
+  list<string> GetExtendedUrls(
+      1: i64 req_id,
+      2: list<string> shortened_urls,
+      3: map<string, string> carrier
+  ) throws (1: ServiceException se)
 }
 
 service MediaService {

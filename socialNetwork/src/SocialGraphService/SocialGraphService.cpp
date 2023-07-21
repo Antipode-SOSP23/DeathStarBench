@@ -76,4 +76,3 @@ int main(int argc, char *argv[]) {
   std::cout << "Starting the social-graph-service server ..." << std::endl;
   server.serve();
 }
-

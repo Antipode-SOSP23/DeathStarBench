@@ -27,10 +27,8 @@ local function _UploadText(req_id, post, carrier)
   local TextServiceClient = require "social_network_TextService"
   local ngx = ngx
 
-  local text_client = GenericObjectPool:connection(
-      TextServiceClient, "text-service", 9090)
-  local status, err = pcall(text_client.UploadText, text_client, req_id,
-      post.text, carrier)
+  local text_client = GenericObjectPool:connection(TextServiceClient, "text-service", 9090)
+  local status, err = pcall(text_client.UploadText, text_client, req_id, post.text, carrier)
   if not status then
     ngx.status = ngx.HTTP_INTERNAL_SERVER_ERROR
     ngx.say("Upload text failed: " .. err.message)
@@ -40,6 +38,7 @@ local function _UploadText(req_id, post, carrier)
   GenericObjectPool:returnConnection(text_client)
 end
 
+local post_id = ''
 local function _UploadUniqueId(req_id, post, carrier)
   local GenericObjectPool = require "GenericObjectPool"
   local UniqueIdServiceClient = require "social_network_UniqueIdService"
@@ -55,6 +54,7 @@ local function _UploadUniqueId(req_id, post, carrier)
     ngx.log(ngx.ERR, "Upload unique_id failed: " .. err.message)
     ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
   end
+  post_id = err.result;
   GenericObjectPool:returnConnection(unique_id_client)
 end
 
@@ -89,6 +89,7 @@ function _M.ComposePost()
   local cjson = require "cjson"
   local jwt = require "resty.jwt"
 
+  local original_req_id = ngx.var.request_id
   local req_id = tonumber(string.sub(ngx.var.request_id, 0, 15), 16)
   local tracer = bridge_tracer.new_from_global()
   local parent_span_context = tracer:binary_extract(ngx.var.opentracing_binary_context)
@@ -123,12 +124,9 @@ function _M.ComposePost()
       ngx.exit(status)
     end
   end
-  ngx.say("Successfully upload post")
+  ngx.say("Successfully uploaded post #"..post_id)
   span:finish()
   ngx.exit(status)
 end
-
-
-
 
 return _M

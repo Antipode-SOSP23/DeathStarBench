@@ -88,8 +88,12 @@ void UniqueIdHandler::UploadUniqueId(
       { opentracing::ChildOf(parent_span->get()) });
   opentracing::Tracer::Global()->Inject(span->context(), writer);
 
+  _thread_lock->lock();
   int64_t timestamp = duration_cast<milliseconds>(
       system_clock::now().time_since_epoch()).count() - CUSTOM_EPOCH;
+  int idx = GetCounter(timestamp);
+  _thread_lock->unlock();
+
   std::stringstream sstream;
   sstream << std::hex << timestamp;
   std::string timestamp_hex(sstream.str());
@@ -99,10 +103,6 @@ void UniqueIdHandler::UploadUniqueId(
   } else if (timestamp_hex.size() < 10) {
     timestamp_hex = std::string(10 - timestamp_hex.size(), '0') + timestamp_hex;
   }
-
-  _thread_lock->lock();
-  int idx = GetCounter(timestamp);
-  _thread_lock->unlock();
 
   // Empty the sstream buffer.
   sstream.clear();
@@ -118,8 +118,8 @@ void UniqueIdHandler::UploadUniqueId(
   }
   std::string post_id_str = _machine_id + timestamp_hex + counter_hex;
   int64_t post_id = stoul(post_id_str, nullptr, 16) & 0x7FFFFFFFFFFFFFFF;
-  LOG(debug) << "The post_id of the request "
-      << req_id << " is " << post_id;
+  LOG(debug) << "The post_id of the request " << req_id << " is " << post_id;
+  response.result = std::to_string(post_id);
 
   // Upload to compose post service
   auto compose_post_client_wrapper = _compose_client_pool->Pop();
