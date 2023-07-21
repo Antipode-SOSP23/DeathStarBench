@@ -97,7 +97,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update \
     && if [ -n "${RESTY_EVAL_PRE_CONFIGURE}" ]; then eval $(echo ${RESTY_EVAL_PRE_CONFIGURE}); fi \
     && curl -fSL https://www.openssl.org/source/openssl-${RESTY_OPENSSL_VERSION}.tar.gz -o openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
     && tar xzf openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
-    && curl -fSL https://ftp.pcre.org/pub/pcre/pcre-${RESTY_PCRE_VERSION}.tar.gz -o pcre-${RESTY_PCRE_VERSION}.tar.gz \
+    && curl -fSL http://ftp.cs.stanford.edu/pub/exim/pcre/pcre-${RESTY_PCRE_VERSION}.tar.gz -o pcre-${RESTY_PCRE_VERSION}.tar.gz \
     && tar xzf pcre-${RESTY_PCRE_VERSION}.tar.gz \
   ### Build opentracing-cpp
     && cd /tmp \
@@ -202,12 +202,12 @@ RUN luarocks install long \
     && luarocks install lua-resty-jwt \
     && ldconfig
 
-RUN apt-get update \ 
+RUN apt-get update \
   && apt-get install -y libboost-all-dev
 
 RUN apt-get install -y lua5.1 lua5.1-dev
 
-RUN cd /tmp \ 
+RUN cd /tmp \
   && wget https://github.com/google/protobuf/releases/download/v2.5.0/protobuf-2.5.0.tar.gz \
   && gunzip protobuf-2.5.0.tar.gz \
   && tar -xvf protobuf-2.5.0.tar \
