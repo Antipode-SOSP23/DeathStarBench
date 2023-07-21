@@ -57,7 +57,7 @@ class UniqueIdHandler : public UniqueIdServiceIf {
       const std::string &,
       ClientPool<ThriftClient<ComposePostServiceClient>> *);
 
-  void UploadUniqueId(BaseRpcResponse &, int64_t, PostType::type,
+  void UploadUniqueId(LoginRpcResponse &, int64_t, PostType::type,
       const std::map<std::string, std::string> &) override;
 
  private:
@@ -76,7 +76,7 @@ UniqueIdHandler::UniqueIdHandler(
 }
 
 void UniqueIdHandler::UploadUniqueId(
-    BaseRpcResponse &response,
+    LoginRpcResponse &response,
     int64_t req_id,
     PostType::type post_type,
     const std::map<std::string, std::string> & carrier) {
@@ -148,7 +148,7 @@ void UniqueIdHandler::UploadUniqueId(
   try {
     writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
     BaseRpcResponse cp_response;
-    compose_post_client->UploadUniqueId(cp_response, req_id, post_id, post_type, writer_text_map);    
+    compose_post_client->UploadUniqueId(cp_response, req_id, post_id, post_type, writer_text_map);
     Baggage b = Baggage::deserialize(cp_response.baggage);
     JOIN_CURRENT_BAGGAGE(b);
   } catch (...) {
