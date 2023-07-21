@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <future>
+#include <chrono>
 
 #include <mongoc.h>
 #include <libmemcached/memcached.h>
@@ -11,22 +12,38 @@
 #include <bson/bson.h>
 #include <nlohmann/json.hpp>
 
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/post.hpp>
+
 #include "../../gen-cpp/PostStorageService.h"
+#include "../../gen-cpp/AntipodeOracle.h"
+#include "../../gen-cpp/WriteHomeTimelineService.h"
+#include "../ClientPool.h"
 #include "../logger.h"
 #include "../tracing.h"
+#include "../antipode.h"
+#include "../ThriftClient.h"
 #include <xtrace/xtrace.h>
 #include <xtrace/baggage.h>
+
+// for clock usage
+using namespace std::chrono;
+using namespace antipode;
 
 namespace social_network {
 using json = nlohmann::json;
 
 class PostStorageHandler : public PostStorageServiceIf {
  public:
-  PostStorageHandler(memcached_pool_st *, mongoc_client_pool_t *);
+  PostStorageHandler(
+      memcached_pool_st *,
+      mongoc_client_pool_t *,
+      ClientPool<ThriftClient<AntipodeOracleClient>> *,
+      std::string);
   ~PostStorageHandler() override = default;
 
   void StorePost(BaseRpcResponse& response, int64_t req_id, const Post &post,
-      const std::map<std::string, std::string> &carrier) override;
+      const std::string& cscope_str, const std::map<std::string, std::string> &carrier) override;
 
   void ReadPost(PostRpcResponse& response, int64_t req_id, int64_t post_id,
                  const std::map<std::string, std::string> &carrier) override;
@@ -38,19 +55,46 @@ class PostStorageHandler : public PostStorageServiceIf {
  private:
   memcached_pool_st *_memcached_client_pool;
   mongoc_client_pool_t *_mongodb_client_pool;
+  ClientPool<ThriftClient<AntipodeOracleClient>> *_antipode_oracle_client_pool;
+  std::string _zone;
+  std::exception_ptr _post_storage_teptr;
 };
 
 PostStorageHandler::PostStorageHandler(
     memcached_pool_st *memcached_client_pool,
-    mongoc_client_pool_t *mongodb_client_pool) {
+    mongoc_client_pool_t *mongodb_client_pool,
+    ClientPool<social_network::ThriftClient<AntipodeOracleClient>> *antipode_oracle_client_pool,
+    std::string zone) {
   _memcached_client_pool = memcached_client_pool;
   _mongodb_client_pool = mongodb_client_pool;
+  _antipode_oracle_client_pool = antipode_oracle_client_pool;
+  _zone = zone;
 }
+
+// Launch the pool with as much threads as cores
+// int num_threads = std::thread::hardware_concurrency() * 8;
+// boost::asio::thread_pool async_store_post_pool(num_threads);
 
 void PostStorageHandler::StorePost(
     BaseRpcResponse &response,
     int64_t req_id, const social_network::Post &post,
+    const std::string& cscope_str,
     const std::map<std::string, std::string> &carrier) {
+
+  //----------
+  // -ANTIPODE
+  //----------
+  high_resolution_clock::time_point ts;
+  duration<double, std::milli> time_diff;
+  uint64_t ts_int;
+
+  // force WritHomeTimeline to an error by sleeping
+  // LOG(debug) << "[ANTIPODE] Sleeping ...";
+  // std::this_thread ::sleep_for (std::chrono::milliseconds(1000));
+  // LOG(debug) << "[ANTIPODE] Done Sleeping!";
+  //----------
+  // -ANTIPODE
+  //----------
 
   auto baggage_it = carrier.find("baggage");
   if (baggage_it != carrier.end()) {
@@ -94,8 +138,16 @@ void PostStorageHandler::StorePost(
   }
 
   bson_t *new_doc = bson_new();
+
+  // Add object ID so we have the append ID for ANTIPODE
+  bson_oid_t oid;
+  bson_oid_init (&oid, NULL);
+  BSON_APPEND_OID (new_doc, "_id", &oid);
+
   BSON_APPEND_INT64(new_doc, "post_id", post.post_id);
-  BSON_APPEND_INT64(new_doc, "timestamp", post.timestamp);
+  // DEBUG DELAY - refresh post timestamp to compare
+  // BSON_APPEND_INT64(new_doc, "timestamp", post.timestamp);
+  BSON_APPEND_INT64(new_doc, "timestamp", duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
   BSON_APPEND_UTF8(new_doc, "text", post.text.c_str());
   BSON_APPEND_INT64(new_doc, "req_id", post.req_id);
   BSON_APPEND_INT32(new_doc, "post_type", post.post_type);
@@ -157,14 +209,41 @@ void PostStorageHandler::StorePost(
   // XTRACE("MongoInsertPost start");
   auto insert_span = opentracing::Tracer::Global()->StartSpan(
       "MongoInsertPost", { opentracing::ChildOf(&span->context()) });
-  bool inserted = mongoc_collection_insert_one (
-      collection, new_doc, nullptr, nullptr, &error);
-  insert_span->Finish();
-  // XTRACE("MongoInsertPost complete");
 
+  // include write concern in command options
+  // example: http://mongoc.org/libmongoc/current/mongoc_client_write_command_with_opts.html
+  bson_t* opts = bson_new();
+  mongoc_write_concern_t *write_concern = mongoc_write_concern_new ();
+  mongoc_write_concern_set_w (write_concern, MONGOC_WRITE_CONCERN_W_DEFAULT);
+  mongoc_write_concern_append (write_concern, opts);
+
+  //----------
+  // -ANTIPODE
+  //----------
+  // Start Antipode client
+  AntipodeMongodb* antipode_client = new AntipodeMongodb(mongodb_client, "post");
+  Cscope cscope = Cscope::from_json(cscope_str);
+
+  // insert cscope_id into the transaction
+  // antipode_client->inject(session, cscope_id, "post-storage-service", "post-storage", &oid);
+
+  // ANTIPODE-TOGGLE
+  if (is_antipode_enabled()) {
+    char append_id[25];
+    bson_oid_to_string(&oid, append_id);
+    cscope = cscope.append(std::string(append_id), "post-storage-service", "post-storage");
+  }
+
+  //----------
+  // -ORIGINAL
+  //----------
+  bool inserted = mongoc_collection_insert_one (collection, new_doc, opts, nullptr, &error);
+
+  // XTRACE("MongoInsertPost complete");
+  insert_span->Finish();
   if (!inserted) {
     LOG(error) << "Error: Failed to insert post to MongoDB: "
-               << error.message;
+                << error.message;
     ServiceException se;
     se.errorCode = ErrorCode::SE_MONGODB_ERROR;
     se.message = error.message;
@@ -174,17 +253,32 @@ void PostStorageHandler::StorePost(
     // XTRACE("Failed to insert post to MongoDB");
     throw se;
   }
+  //----------
+  // -ORIGINAL
+  //----------
+  // ANTIPODE-TOGGLE
+  // cscope = cscope.close_branch("post-storage");
+  //----------
+  // -ANTIPODE
+  //----------
 
-  bson_destroy(new_doc);
-  mongoc_collection_destroy(collection);
-  mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+  // eval
+  ts = high_resolution_clock::now();
+  ts_int = duration_cast<milliseconds>(ts.time_since_epoch()).count();
+  span->SetTag("poststorage_post_written_ts", std::to_string(ts_int));
+
+  bson_destroy (new_doc);
+  bson_destroy (opts);
+  mongoc_write_concern_destroy (write_concern);
+  mongoc_collection_destroy (collection);
+  mongoc_client_pool_push (_mongodb_client_pool, mongodb_client);
 
   span->Finish();
-  // XTRACE("PostStorageHandler::ReadPost complete");
+  // XTRACE("PostStorageHandler::StorePost complete");
   response.baggage = GET_CURRENT_BAGGAGE().str();
+  response.cscope_json = cscope.to_json();
   DELETE_CURRENT_BAGGAGE();
 }
-
 
 void PostStorageHandler::ReadPost(
     PostRpcResponse& response,
@@ -282,6 +376,7 @@ void PostStorageHandler::ReadPost(
   } else {
     // If not cached in memcached
     // XTRACE("Post " + std::to_string(post_id) + " not cached in Memcached");
+    LOG(debug) << "Post " << post_id << " not cached in Memcached";
     mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
         _mongodb_client_pool);
     if (!mongodb_client) {
@@ -339,7 +434,8 @@ void PostStorageHandler::ReadPost(
         // XTRACE("Post " + std::to_string(post_id) + " doesn't exist in MongoDB");
         throw se;
       }
-    } else {
+    }
+    else {
       // XTRACE("Post " + std::to_string(post_id) + " found in MongoDB");
       LOG(debug) << "Post_id: " << post_id << " found in MongoDB";
       auto post_json_char = bson_as_json(doc, nullptr);
@@ -417,6 +513,7 @@ void PostStorageHandler::ReadPost(
   response.result = _return;
   DELETE_CURRENT_BAGGAGE();
 }
+
 void PostStorageHandler::ReadPosts(
     PostListRpcResponse& response,
     int64_t req_id,
@@ -471,6 +568,7 @@ void PostStorageHandler::ReadPosts(
     throw se;
   }
 
+
   char** keys;
   size_t *key_sizes;
   keys = new char* [post_ids.size()];
@@ -494,6 +592,7 @@ void PostStorageHandler::ReadPosts(
     // XTRACE("Cannot get posts");
     throw se;
   }
+
 
   char return_key[MEMCACHED_MAX_KEY];
   size_t return_key_length;
@@ -555,7 +654,9 @@ void PostStorageHandler::ReadPosts(
     free(return_value);
   }
   get_span->Finish();
+
   // XTRACE("MemcachedMget complete");
+  LOG(debug) << "MemcachedMget complete";
   memcached_quit(memcached_client);
   memcached_pool_push(_memcached_client_pool, memcached_client);
   for (int i = 0; i < post_ids.size(); ++i) {
@@ -570,6 +671,7 @@ void PostStorageHandler::ReadPosts(
 
   // Find the rest in MongoDB
   // XTRACE("Finding posts in MongoDB");
+  LOG(debug) << "Finding posts in MongoDB";
   if (!post_ids_not_cached.empty()) {
     mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
         _mongodb_client_pool);
@@ -611,6 +713,7 @@ void PostStorageHandler::ReadPosts(
     const bson_t *doc;
 
     // XTRACE("MongoFindPosts start");
+    LOG(debug) << "MongoFindPosts start";
     auto find_span = opentracing::Tracer::Global()->StartSpan(
         "MongoFindPosts", {opentracing::ChildOf(&span->context())});
     while (true) {
@@ -652,6 +755,7 @@ void PostStorageHandler::ReadPosts(
     }
     find_span->Finish();
     // XTRACE("MongoFindPosts complete");
+    LOG(debug) << "MongoFindPosts complete";
     bson_error_t error;
     if (mongoc_cursor_error(cursor, &error)) {
       LOG(warning) << error.message;
@@ -671,13 +775,18 @@ void PostStorageHandler::ReadPosts(
 
     // upload posts to memcached
     // XTRACE("Uploading posts to memcached");
+    LOG(debug) << "Uploading posts to memcached";
+
     Baggage set_future_baggage = BRANCH_CURRENT_BAGGAGE();
     set_baggages.emplace_back(set_future_baggage);
     set_futures.emplace_back(std::async(std::launch::async, [&]() {
+      // [ANTIPODE]
+      // These baggages were causing invalid pointers
+      // ----
+
       memcached_return_t _rc;
-      BAGGAGE(set_future_baggage);
-      auto _memcached_client = memcached_pool_pop(
-          _memcached_client_pool, true, &_rc);
+      // BAGGAGE(set_future_baggage);
+      auto _memcached_client = memcached_pool_pop(_memcached_client_pool, true, &_rc);
       if (!_memcached_client) {
         LOG(error) << "Failed to pop a client from memcached pool";
         ServiceException se;
@@ -687,8 +796,8 @@ void PostStorageHandler::ReadPosts(
         throw se;
       }
       // XTRACE("MemcachedSetPost start");
-      auto set_span = opentracing::Tracer::Global()->StartSpan(
-          "MmcSetPost", {opentracing::ChildOf(&span->context())});
+      LOG(debug) << "MemcachedSetPost start";
+      // auto set_span = opentracing::Tracer::Global()->StartSpan("MmcSetPost", {opentracing::ChildOf(&span->context())});
       for (auto & it : post_json_map) {
         std::string id_str = std::to_string(it.first);
         _rc = memcached_set(
@@ -701,10 +810,12 @@ void PostStorageHandler::ReadPosts(
             static_cast<uint32_t>(0));
       }
       memcached_pool_push(_memcached_client_pool, _memcached_client);
-      set_span->Finish();
+      // set_span->Finish();
       // XTRACE("MemcachedSetPost complete");
-      }));
+      LOG(debug) << "MemcachedSetPost complete";
+    }));
   }
+
 
   if (return_map.size() != post_ids.size()) {
     try {
@@ -720,6 +831,7 @@ void PostStorageHandler::ReadPosts(
     se.errorCode = ErrorCode::SE_THRIFT_HANDLER_ERROR;
     se.message = "Return set incomplete";
     // XTRACE("Return set incomplete");
+    LOG(debug) << "Return set incomplete";
     throw se;
   }
 
@@ -735,9 +847,11 @@ void PostStorageHandler::ReadPosts(
   } catch (...) {
     LOG(warning) << "Failed to set posts to memcached";
     // XTRACE("Failed to set posts to memcached");
+    LOG(debug) << "Failed to set posts to memcached";
   }
 
   // XTRACE("PostStorageHandler::ReadPosts complete");
+  LOG(debug) << "PostStorageHandler::ReadPosts complete";
   response.baggage = GET_CURRENT_BAGGAGE().str();
   response.result = _return;
   DELETE_CURRENT_BAGGAGE();

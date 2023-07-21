@@ -21,7 +21,8 @@ int _kErrorCodeValues[] = {
   ErrorCode::SE_MONGODB_ERROR,
   ErrorCode::SE_REDIS_ERROR,
   ErrorCode::SE_THRIFT_HANDLER_ERROR,
-  ErrorCode::SE_RABBITMQ_CONN_ERROR
+  ErrorCode::SE_RABBITMQ_CONN_ERROR,
+  ErrorCode::SE_FAKE_ERROR
 };
 const char* _kErrorCodeNames[] = {
   "SE_CONNPOOL_TIMEOUT",
@@ -31,9 +32,10 @@ const char* _kErrorCodeNames[] = {
   "SE_MONGODB_ERROR",
   "SE_REDIS_ERROR",
   "SE_THRIFT_HANDLER_ERROR",
-  "SE_RABBITMQ_CONN_ERROR"
+  "SE_RABBITMQ_CONN_ERROR",
+  "SE_FAKE_ERROR"
 };
-const std::map<int, const char*> _ErrorCode_VALUES_TO_NAMES(::apache::thrift::TEnumIterator(8, _kErrorCodeValues, _kErrorCodeNames), ::apache::thrift::TEnumIterator(-1, NULL, NULL));
+const std::map<int, const char*> _ErrorCode_VALUES_TO_NAMES(::apache::thrift::TEnumIterator(9, _kErrorCodeValues, _kErrorCodeNames), ::apache::thrift::TEnumIterator(-1, NULL, NULL));
 
 std::ostream& operator<<(std::ostream& out, const ErrorCode::type& val) {
   std::map<int, const char*>::const_iterator it = _ErrorCode_VALUES_TO_NAMES.find(val);
@@ -1156,6 +1158,10 @@ BaseRpcResponse::~BaseRpcResponse() throw() {
 void BaseRpcResponse::__set_baggage(const std::string& val) {
   this->baggage = val;
 }
+
+void BaseRpcResponse::__set_cscope_json(const std::string& val) {
+  this->cscope_json = val;
+}
 std::ostream& operator<<(std::ostream& out, const BaseRpcResponse& obj)
 {
   obj.printTo(out);
@@ -1192,6 +1198,14 @@ uint32_t BaseRpcResponse::read(::apache::thrift::protocol::TProtocol* iprot) {
           xfer += iprot->skip(ftype);
         }
         break;
+      case 2:
+        if (ftype == ::apache::thrift::protocol::T_STRING) {
+          xfer += iprot->readString(this->cscope_json);
+          this->__isset.cscope_json = true;
+        } else {
+          xfer += iprot->skip(ftype);
+        }
+        break;
       default:
         xfer += iprot->skip(ftype);
         break;
@@ -1213,6 +1227,10 @@ uint32_t BaseRpcResponse::write(::apache::thrift::protocol::TProtocol* oprot) co
   xfer += oprot->writeString(this->baggage);
   xfer += oprot->writeFieldEnd();
 
+  xfer += oprot->writeFieldBegin("cscope_json", ::apache::thrift::protocol::T_STRING, 2);
+  xfer += oprot->writeString(this->cscope_json);
+  xfer += oprot->writeFieldEnd();
+
   xfer += oprot->writeFieldStop();
   xfer += oprot->writeStructEnd();
   return xfer;
@@ -1221,15 +1239,18 @@ uint32_t BaseRpcResponse::write(::apache::thrift::protocol::TProtocol* oprot) co
 void swap(BaseRpcResponse &a, BaseRpcResponse &b) {
   using ::std::swap;
   swap(a.baggage, b.baggage);
+  swap(a.cscope_json, b.cscope_json);
   swap(a.__isset, b.__isset);
 }
 
 BaseRpcResponse::BaseRpcResponse(const BaseRpcResponse& other34) {
   baggage = other34.baggage;
+  cscope_json = other34.cscope_json;
   __isset = other34.__isset;
 }
 BaseRpcResponse& BaseRpcResponse::operator=(const BaseRpcResponse& other35) {
   baggage = other35.baggage;
+  cscope_json = other35.cscope_json;
   __isset = other35.__isset;
   return *this;
 }
@@ -1237,6 +1258,7 @@ void BaseRpcResponse::printTo(std::ostream& out) const {
   using ::apache::thrift::to_string;
   out << "BaseRpcResponse(";
   out << "baggage=" << to_string(baggage);
+  out << ", " << "cscope_json=" << to_string(cscope_json);
   out << ")";
 }
 

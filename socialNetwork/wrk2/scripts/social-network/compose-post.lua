@@ -1,4 +1,8 @@
 require "socket"
+JSON = require("JSON")
+stringx = require "pl.stringx"
+tablex = require "pl.tablex"
+
 math.randomseed(socket.gettime()*1000)
 math.random(); math.random(); math.random()
 
@@ -26,18 +30,26 @@ local function decRandom(length)
   end
 end
 
+local host_eu = os.getenv('HOST_EU')
+local host_us = os.getenv('HOST_US')
+local num_users = 1000000000 -- 10 ^ 9
+
 request = function()
-  local user_index = math.random(1, 962)
+  local user_index = math.random(1, num_users)
+  -- local user_index = 1
   local username = "username_" .. tostring(user_index)
   local user_id = tostring(user_index)
   local text = stringRandom(256)
-  local num_user_mentions = math.random(0, 5)
-  local num_urls = math.random(0, 5)
-  local num_media = math.random(0, 4)
-  local media_ids = '['
-  local media_types = '['
+  -- local num_user_mentions = math.random(0, 5)
+  local num_user_mentions = 0
+  -- local num_urls = math.random(0, 5)
+  local num_urls = 0
+  -- local num_media = math.random(0, 4)
+  local num_media = 0
+  local media_ids = ''
+  local media_types = ''
 
-  for i = 0, num_user_mentions, 1 do
+  for i = 1, num_user_mentions, 1 do
     local user_mention_id
     while (true) do
       user_mention_id = math.random(1, 962)
@@ -48,32 +60,39 @@ request = function()
     text = text .. " @username_" .. tostring(user_mention_id)
   end
 
-  for i = 0, num_urls, 1 do
+  for i = 1, num_urls, 1 do
     text = text .. " http://" .. stringRandom(64)
   end
 
-  for i = 0, num_media, 1 do
+  for i = 1, num_media, 1 do
     local media_id = decRandom(18)
     media_ids = media_ids .. "\"" .. media_id .. "\","
     media_types = media_types .. "\"png\","
   end
 
-  media_ids = media_ids:sub(1, #media_ids - 1) .. "]"
-  media_types = media_types:sub(1, #media_types - 1) .. "]"
+  media_ids = '[' .. media_ids:sub(1, #media_ids - 1) .. "]"
+  media_types = '[' .. media_types:sub(1, #media_types - 1) .. "]"
 
   local method = "POST"
-  local path = "http://localhost:8080/wrk2-api/post/compose"
+  local path = host_eu .. "/wrk2-api/post/compose"
   local headers = {}
   local body
+
   headers["Content-Type"] = "application/x-www-form-urlencoded"
-  if num_media then
+  if num_media <= 0 then
     body   = "username=" .. username .. "&user_id=" .. user_id ..
         "&text=" .. text .. "&media_ids=" .. media_ids ..
         "&media_types=" .. media_types .. "&post_type=0"
   else
     body   = "username=" .. username .. "&user_id=" .. user_id ..
-        "&text=" .. text .. "&media_ids=" .. "&post_type=0"
+        "&text=" .. text .. "&post_type=0"
   end
 
   return wrk.format(method, path, headers, body)
 end
+
+-- response = function(status, headers, body)
+--   if status == 200 then
+--     print(body)
+--   end
+-- end

@@ -3,6 +3,8 @@ add_executable(
     PostStorageService.cpp
     ${THRIFT_GEN_CPP_DIR}/PostStorageService.cpp
     ${THRIFT_GEN_CPP_DIR}/social_network_types.cpp
+    ${THRIFT_GEN_CPP_DIR}/AntipodeOracle.cpp
+    ${THRIFT_GEN_CPP_DIR}/WriteHomeTimelineService.cpp
 )
 
 target_include_directories(
@@ -26,6 +28,7 @@ target_link_libraries(
     jaegertracing
     xtrace
     protobuf
+    tbb
 )
 
 install(TARGETS PostStorageService DESTINATION ./)

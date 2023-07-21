@@ -29,7 +29,8 @@ struct ErrorCode {
     SE_MONGODB_ERROR = 4,
     SE_REDIS_ERROR = 5,
     SE_THRIFT_HANDLER_ERROR = 6,
-    SE_RABBITMQ_CONN_ERROR = 7
+    SE_RABBITMQ_CONN_ERROR = 7,
+    SE_FAKE_ERROR = 8
   };
 };
 
@@ -483,8 +484,9 @@ void swap(Post &a, Post &b);
 std::ostream& operator<<(std::ostream& out, const Post& obj);
 
 typedef struct _BaseRpcResponse__isset {
-  _BaseRpcResponse__isset() : baggage(false) {}
+  _BaseRpcResponse__isset() : baggage(false), cscope_json(false) {}
   bool baggage :1;
+  bool cscope_json :1;
 } _BaseRpcResponse__isset;
 
 class BaseRpcResponse : public virtual ::apache::thrift::TBase {
@@ -492,19 +494,24 @@ class BaseRpcResponse : public virtual ::apache::thrift::TBase {
 
   BaseRpcResponse(const BaseRpcResponse&);
   BaseRpcResponse& operator=(const BaseRpcResponse&);
-  BaseRpcResponse() : baggage() {
+  BaseRpcResponse() : baggage(), cscope_json() {
   }
 
   virtual ~BaseRpcResponse() throw();
   std::string baggage;
+  std::string cscope_json;
 
   _BaseRpcResponse__isset __isset;
 
   void __set_baggage(const std::string& val);
 
+  void __set_cscope_json(const std::string& val);
+
   bool operator == (const BaseRpcResponse & rhs) const
   {
     if (!(baggage == rhs.baggage))
+      return false;
+    if (!(cscope_json == rhs.cscope_json))
       return false;
     return true;
   }

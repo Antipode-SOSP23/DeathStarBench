@@ -33,19 +33,20 @@ int main(int argc, char *argv[]) {
   }
 
   int port = config_json["home-timeline-service"]["port"];
-  std::string redis_addr =
-      config_json["home-timeline-redis"]["addr"];
-  int redis_port = config_json["home-timeline-redis"]["port"];
+  // this is a REDIS slave replica which allows WRITES
+  // but writes in REPLICAS are EPHEMERAL. For our scenario this is enough.
+  std::string redis_addr = config_json["home-timeline-redis-us"]["addr"];
+  int redis_port = config_json["home-timeline-redis-us"]["port"];
 
-  int post_storage_port = config_json["post-storage-service"]["port"];
-  std::string post_storage_addr = config_json["post-storage-service"]["addr"];
+  int post_storage_port = config_json["post-storage-service-us"]["port"];
+  std::string post_storage_addr = config_json["post-storage-service-us"]["addr"];
 
-  ClientPool<RedisClient> redis_client_pool("home-timeline-redis",
-      redis_addr, redis_port, 0, 128, 1000);
+  ClientPool<RedisClient> redis_client_pool("home-timeline-redis-us",
+      redis_addr, redis_port, 0, 10000, 1000);
 
   ClientPool<ThriftClient<PostStorageServiceClient>>
-      post_storage_client_pool("post-storage-client", post_storage_addr,
-                               post_storage_port, 0, 128, 1000);
+      post_storage_client_pool("post-storage-client-us", post_storage_addr,
+                               post_storage_port, 0, 10000, 1000);
 
   TThreadedServer server (
       std::make_shared<HomeTimelineServiceProcessor>(

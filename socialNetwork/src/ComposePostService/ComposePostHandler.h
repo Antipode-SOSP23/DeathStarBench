@@ -10,12 +10,16 @@
 #include <cpp_redis/cpp_redis>
 #include <nlohmann/json.hpp>
 
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/post.hpp>
+
 #include "../../gen-cpp/ComposePostService.h"
 #include "../../gen-cpp/PostStorageService.h"
 #include "../../gen-cpp/UserTimelineService.h"
 #include "../ClientPool.h"
 #include "../logger.h"
 #include "../tracing.h"
+#include "../antipode.h"
 #include "../RedisClient.h"
 #include "../ThriftClient.h"
 #include "RabbitmqClient.h"
@@ -25,11 +29,17 @@
 #define NUM_COMPONENTS 6
 #define REDIS_EXPIRE_TIME 10
 
+using namespace antipode;
+
 namespace social_network {
+
 using json = nlohmann::json;
 using std::chrono::milliseconds;
 using std::chrono::duration_cast;
 using std::chrono::system_clock;
+using std::chrono::high_resolution_clock;
+using std::chrono::duration;
+
 
 class ComposePostHandler : public ComposePostServiceIf {
  public:
@@ -37,7 +47,10 @@ class ComposePostHandler : public ComposePostServiceIf {
       ClientPool<RedisClient> *,
       ClientPool<ThriftClient<PostStorageServiceClient>> *,
       ClientPool<ThriftClient<UserTimelineServiceClient>> *,
-      ClientPool<RabbitmqClient> *rabbitmq_client_pool);
+      ClientPool<RabbitmqClient> *,
+      std::string,
+      std::vector<std::string>);
+
   ~ComposePostHandler() override = default;
 
   void UploadText(BaseRpcResponse& response, int64_t req_id, const std::string& text,
@@ -62,11 +75,12 @@ class ComposePostHandler : public ComposePostServiceIf {
 
  private:
   ClientPool<RedisClient> *_redis_client_pool;
-  ClientPool<ThriftClient<PostStorageServiceClient>>
-      *_post_storage_client_pool;
-  ClientPool<ThriftClient<UserTimelineServiceClient>>
-      *_user_timeline_client_pool;
+  ClientPool<ThriftClient<PostStorageServiceClient>> *_post_storage_client_pool;
+  ClientPool<ThriftClient<UserTimelineServiceClient>> *_user_timeline_client_pool;
   ClientPool<RabbitmqClient> *_rabbitmq_client_pool;
+  std::string _zone;
+  std::vector<std::string> _interest_zones;
+
   std::exception_ptr _rabbitmq_teptr;
   std::exception_ptr _post_storage_teptr;
   std::exception_ptr _user_timeline_teptr;
@@ -80,24 +94,25 @@ class ComposePostHandler : public ComposePostServiceIf {
       Baggage& baggage, std::promise<Baggage> baggage_promise);
 
   void _UploadPostHelper(int64_t req_id, const Post &post,
+      Cscope &cscope,
       const std::map<std::string, std::string> &carrier,
       Baggage& baggage, std::promise<Baggage> baggage_promise);
 
   void _UploadHomeTimelineHelper(int64_t req_id, int64_t post_id,
       int64_t user_id, int64_t timestamp,
       const std::vector<int64_t> &user_mentions_id,
+      Cscope &cscope,
       const std::map<std::string, std::string> &carrier,
       Baggage& baggage, std::promise<Baggage> baggage_promise);
-
 };
 
 ComposePostHandler::ComposePostHandler(
     ClientPool<social_network::RedisClient> * redis_client_pool,
-    ClientPool<social_network::ThriftClient<
-        PostStorageServiceClient>> *post_storage_client_pool,
-    ClientPool<social_network::ThriftClient<
-        UserTimelineServiceClient>> *user_timeline_client_pool,
-    ClientPool<RabbitmqClient> *rabbitmq_client_pool) {
+    ClientPool<social_network::ThriftClient<PostStorageServiceClient>> *post_storage_client_pool,
+    ClientPool<social_network::ThriftClient<UserTimelineServiceClient>> *user_timeline_client_pool,
+    ClientPool<RabbitmqClient> *rabbitmq_client_pool,
+    std::string zone,
+    std::vector<std::string> interest_zones) {
   _redis_client_pool = redis_client_pool;
   _post_storage_client_pool = post_storage_client_pool;
   _user_timeline_client_pool = user_timeline_client_pool;
@@ -105,7 +120,13 @@ ComposePostHandler::ComposePostHandler(
   _rabbitmq_teptr = nullptr;
   _post_storage_teptr = nullptr;
   _user_timeline_teptr = nullptr;
+  _zone = zone;
+  _interest_zones = interest_zones;
 }
+
+// Launch the pool with as much threads as cores
+int num_threads = std::thread::hardware_concurrency() * 8;
+boost::asio::thread_pool compose_and_upload_pool(num_threads);
 
 void ComposePostHandler::UploadCreator(
     BaseRpcResponse& response,
@@ -580,6 +601,17 @@ void ComposePostHandler::_ComposeAndUpload(
   }
   // XTRACE("ComposePostHandler::_ComposeAndUpload Start");
 
+  // Initialize a span
+  TextMapReader reader(carrier);
+  std::map<std::string, std::string> writer_text_map;
+  TextMapWriter writer(writer_text_map);
+  auto parent_span = opentracing::Tracer::Global()->Extract(reader);
+  auto span = opentracing::Tracer::Global()->StartSpan(
+    "_ComposeAndUpload",
+    { opentracing::ChildOf(parent_span->get()) });
+  opentracing::Tracer::Global()->Inject(span->context(), writer);
+
+
   // XTRACE("Redis RetrieveMessages start");
   auto redis_client_wrapper = _redis_client_pool->Pop();
   if (!redis_client_wrapper) {
@@ -653,8 +685,6 @@ void ComposePostHandler::_ComposeAndUpload(
   post.creator.user_id = creator_json["user_id"];
   post.creator.username = creator_json["username"];
 
-  LOG(debug) << user_mentions_reply.as_string();
-
   std::vector<int64_t> user_mentions_id;
 
   json user_mentions_json = json::parse(user_mentions_reply.as_string());
@@ -683,32 +713,45 @@ void ComposePostHandler::_ComposeAndUpload(
   }
 
   // XTRACE("Compose Post complete");
+  span->SetTag("composepost_id", post.post_id);
+
+  high_resolution_clock::time_point ts;
+  duration<double, std::milli> time_diff;
+
+  high_resolution_clock::time_point start_ts = high_resolution_clock::now();
+
+  //----------
+  // -ANTIPODE
+  //----------
+  Cscope cscope = antipode::Cscope("post-storage");
+  cscope = cscope.open_branch("post-storage");
+  //----------
+  // -ANTIPODE
+  //----------
+
   // Upload the post
   // XTRACE("Upload Post start");
   Baggage upload_post_helper_baggage = BRANCH_CURRENT_BAGGAGE();
   std::promise<Baggage> upload_post_promise;
   std::future<Baggage> upload_post_future = upload_post_promise.get_future();
-  std::thread upload_post_worker(&ComposePostHandler::_UploadPostHelper,
-                                   this, req_id, std::ref(post), std::ref(carrier), std::ref(upload_post_helper_baggage), std::move(upload_post_promise));
-
-  Baggage upload_user_timeline_helper_baggage = BRANCH_CURRENT_BAGGAGE();
-  std::promise<Baggage> upload_user_promise;
-  std::future<Baggage> upload_user_future = upload_user_promise.get_future();
-  std::thread upload_user_timeline_worker(
-      &ComposePostHandler::_UploadUserTimelineHelper, this, req_id,
-      post.post_id, post.creator.user_id, post.timestamp, std::ref(carrier), std::ref(upload_user_timeline_helper_baggage), std::move(upload_user_promise));
+  // std::thread upload_post_worker(&ComposePostHandler::_UploadPostHelper, this, req_id, std::ref(post), std::ref(cscope), std::ref(carrier), std::ref(upload_post_helper_baggage), std::ref(upload_post_promise));
+  _UploadPostHelper(req_id, post, cscope, carrier, upload_post_helper_baggage, std::move(upload_post_promise));
 
   Baggage upload_home_timeline_helper_baggage = BRANCH_CURRENT_BAGGAGE();
   std::promise<Baggage> upload_home_promise;
   std::future<Baggage> upload_home_future = upload_home_promise.get_future();
-  std::thread upload_home_timeline_worker(
-      &ComposePostHandler::_UploadHomeTimelineHelper, this, req_id,
-      post.post_id, post.creator.user_id, post.timestamp,
-      std::ref(user_mentions_id), std::ref(carrier), std::ref(upload_home_timeline_helper_baggage), std::move(upload_home_promise));
+  // std::thread upload_home_timeline_worker(&ComposePostHandler::_UploadHomeTimelineHelper, this, req_id, post.post_id, post.creator.user_id, post.timestamp, std::ref(user_mentions_id), std::ref(cscope), std::ref(carrier), std::ref(upload_home_timeline_helper_baggage), std::move(upload_home_promise));
+  _UploadHomeTimelineHelper(req_id, post.post_id, post.creator.user_id, post.timestamp, user_mentions_id, cscope, carrier, upload_home_timeline_helper_baggage, std::move(upload_home_promise));
 
-  upload_post_worker.join();
-  upload_user_timeline_worker.join();
-  upload_home_timeline_worker.join();
+  Baggage upload_user_timeline_helper_baggage = BRANCH_CURRENT_BAGGAGE();
+  std::promise<Baggage> upload_user_promise;
+  std::future<Baggage> upload_user_future = upload_user_promise.get_future();
+  // std::thread upload_user_timeline_worker(&ComposePostHandler::_UploadUserTimelineHelper, this, req_id, post.post_id, post.creator.user_id, post.timestamp, std::ref(carrier), std::ref(upload_user_timeline_helper_baggage), std::move(upload_user_promise));
+  _UploadUserTimelineHelper(req_id, post.post_id, post.creator.user_id, post.timestamp, carrier, upload_user_timeline_helper_baggage, std::move(upload_user_promise));
+
+  // upload_post_worker.join();
+  // upload_user_timeline_worker.join();
+  // upload_home_timeline_worker.join();
 
   try {
     upload_post_helper_baggage = upload_post_future.get();
@@ -750,22 +793,25 @@ void ComposePostHandler::_ComposeAndUpload(
     }
   }
 
+  span->Finish();
   // XTRACE("Upload Post complete");
   // XTRACE("ComposePostService::_ComposeAndUpload complete");
 
   DELETE_CURRENT_BAGGAGE();
-
 }
 
 void ComposePostHandler::_UploadPostHelper(
     int64_t req_id,
     const Post &post,
+    Cscope &cscope,
     const std::map<std::string, std::string> &carrier,
     Baggage& baggage, std::promise<Baggage> baggage_promise) {
+
   BAGGAGE(baggage);
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map(carrier);
   TextMapWriter writer(writer_text_map);
+
   try{
     auto post_storage_client_wrapper = _post_storage_client_pool->Pop();
     if (!post_storage_client_wrapper) {
@@ -779,7 +825,12 @@ void ComposePostHandler::_UploadPostHelper(
     try {
       writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
       BaseRpcResponse response;
-      post_storage_client->StorePost(response,req_id, post, writer_text_map);
+      post_storage_client->StorePost(response, req_id, post, cscope.to_json(), writer_text_map);
+
+      // update post with new scope that came from post
+      Cscope post_cscope = Cscope::from_json(response.cscope_json);
+      cscope = post_cscope;
+
       Baggage b = Baggage::deserialize(response.baggage);
       JOIN_CURRENT_BAGGAGE(b);
     } catch (...) {
@@ -822,6 +873,7 @@ void ComposePostHandler::_UploadUserTimelineHelper(
     try {
       writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
       BaseRpcResponse response;
+      // MongoDB outputs "Slow Query"
       user_timeline_client->WriteUserTimeline(response, req_id, post_id, user_id,
                                               timestamp, writer_text_map);
       Baggage b = Baggage::deserialize(response.baggage);
@@ -846,46 +898,100 @@ void ComposePostHandler::_UploadHomeTimelineHelper(
     int64_t user_id,
     int64_t timestamp,
     const std::vector<int64_t> &user_mentions_id,
+    Cscope &cscope,
     const std::map<std::string, std::string> &carrier,
     Baggage& baggage, std::promise<Baggage> baggage_promise) {
+  //
+  // save ts for eval
+  high_resolution_clock::time_point ts;
+  uint64_t ts_int;
+
   BAGGAGE(baggage);
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map(carrier);
   TextMapWriter writer(writer_text_map);
-  try {
-    std::string user_mentions_id_str = "[";
-    for (auto &i : user_mentions_id){
-      user_mentions_id_str += std::to_string(i) + ", ";
-    }
-    user_mentions_id_str = user_mentions_id_str.substr(0,
-        user_mentions_id_str.length() - 2);
-    user_mentions_id_str += "]";
-    std::string carrier_str = "{";
-    for (auto &item : writer_text_map) {
+
+  // Initialize a span
+  auto parent_span = opentracing::Tracer::Global()->Extract(reader);
+  auto span = opentracing::Tracer::Global()->StartSpan(
+    "_UploadHomeTimelineHelper",
+    { opentracing::ChildOf(parent_span->get()) });
+  opentracing::Tracer::Global()->Inject(span->context(), writer);
+
+  std::string user_mentions_id_str = "[";
+  for (auto &i : user_mentions_id){
+    user_mentions_id_str += std::to_string(i) + ", ";
+  }
+  user_mentions_id_str = user_mentions_id_str.substr(0,
+      user_mentions_id_str.length() - 2);
+  user_mentions_id_str += "]";
+  std::string carrier_str = "{";
+  for (auto &item : writer_text_map) {
+    // baggages with chars that are NOT UTF-8
+    // this is a temporary fix so we are able to deserialize JSON with a baggage on it
+    if (item.first != "baggage") {
       carrier_str += "\"" + item.first + "\" : \"" + item.second + "\", ";
     }
-    carrier_str = carrier_str.substr(0, carrier_str.length() - 2);
-    carrier_str += "}";
+  }
+  carrier_str = carrier_str.substr(0, carrier_str.length() - 2);
+  carrier_str += "}";
 
-    std::string msg_str = "{ \"req_id\": " + std::to_string(req_id) +
-        ", \"post_id\": " + std::to_string(post_id) +
-        ", \"user_id\": " + std::to_string(user_id) +
-        ", \"timestamp\": " + std::to_string(timestamp) +
-        ", \"user_mentions_id\": " + user_mentions_id_str +
-        ", \"carrier\": " + carrier_str +
-        ", \"baggage\": " + baggage.str() + "}";
+  // baggages with chars that are NOT UTF-8
+  // this is a temporary fix so we are able to deserialize JSON with a baggage on it
+  // @jmace this should be handled on the XTrace repo
+  // ref: https://nlohmann.github.io/json/classnlohmann_1_1basic__json_a50ec80b02d0f3f51130d4abb5d1cfdc5.html
+  // json j_baggage = baggage.str();
+  // std::string baggage_str = j_baggage.dump(-1, ' ', false, json::error_handler_t::replace);
 
+  std::string msg_str = "{ \"req_id\": " + std::to_string(req_id) +
+      ", \"post_id\": " + std::to_string(post_id) +
+      ", \"user_id\": " + std::to_string(user_id) +
+      ", \"timestamp\": " + std::to_string(timestamp) +
+      ", \"user_mentions_id\": " + user_mentions_id_str +
+      ", \"cscope_str\": " + cscope.to_json() +
+      ", \"carrier\": " + carrier_str + " }";
+
+  try {
     auto rabbitmq_client_wrapper = _rabbitmq_client_pool->Pop();
     if (!rabbitmq_client_wrapper) {
       ServiceException se;
       se.errorCode = ErrorCode::SE_RABBITMQ_CONN_ERROR;
       se.message = "Failed to connect to home-timeline-rabbitmq";
+      LOG(error) << "Failed to connect to home-timeline-rabbitmq";
       // XTRACE("Failed to connect to home-timeline-rabbitmq");
       throw se;
     }
     auto rabbitmq_channel = rabbitmq_client_wrapper->GetChannel();
     auto msg = AmqpClient::BasicMessage::Create(msg_str);
-    rabbitmq_channel->BasicPublish("", "write-home-timeline", msg);
+
+    // use the channel object to call the AMQP method you like
+    rabbitmq_channel->DeclareExchange("write-home-timeline", AmqpClient::Channel::EXCHANGE_TYPE_TOPIC);
+    // publishes to the queue of each zone
+    for (auto &izone : _interest_zones){
+      std::string routing_key = "write-home-timeline-" + izone;
+      rabbitmq_channel->BasicPublish("write-home-timeline", routing_key, msg, true);
+    }
+
+    // save ts when notification as placed on rabbitmq
+    ts = high_resolution_clock::now();
+    ts_int = duration_cast<milliseconds>(ts.time_since_epoch()).count();
+    span->SetTag("wht_start_queue_ts", std::to_string(ts_int));
+
+    //---------
+    // NOT WORKING - ALWAYS RETURNING 0 PROBABLY DUE TO EXCHANGE
+    //---------
+    // for (auto &izone : _interest_zones){
+    //   std::string queue_name = "write-home-timeline-" + izone;
+
+    //   // save the current message count on the tags
+    //   // the only way to get the message count is by doing a passive queue declaration
+    //   // ref: https://github.com/alanxz/SimpleAmqpClient/blob/master/src/Channel.cpp#L637
+    //   boost::uint32_t message_count;
+    //   boost::uint32_t consumer_count;
+    //   rabbitmq_channel->DeclareQueueWithCounts(queue_name, message_count, consumer_count, false, true, false, false);
+
+    //   span->SetTag(queue_name+"-message_count", std::to_string(message_count));
+    // }
     _rabbitmq_client_pool->Push(rabbitmq_client_wrapper);
   } catch (...) {
     LOG(error) << "Failed to connected to home-timeline-rabbitmq";

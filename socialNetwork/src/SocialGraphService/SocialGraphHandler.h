@@ -550,10 +550,8 @@ void SocialGraphHandler::GetFollowers(
   auto redis_client = redis_client_wrapper->GetClient();
 
   // XTRACE("RedisGet start");
-  auto redis_span = opentracing::Tracer::Global()->StartSpan(
-      "RedisGet", {opentracing::ChildOf(&span->context())});
-  auto num_follower = redis_client->zcard(
-      std::to_string(user_id) + ":followers");
+  auto redis_span = opentracing::Tracer::Global()->StartSpan("RedisGet", {opentracing::ChildOf(&span->context())});
+  auto num_follower = redis_client->zcard(std::to_string(user_id) + ":followers");
   redis_client->sync_commit();
   auto num_follower_reply = num_follower.get();
 
@@ -570,13 +568,13 @@ void SocialGraphHandler::GetFollowers(
         _return.emplace_back(std::stoul(item.as_string()));
       }
       _redis_client_pool->Push(redis_client_wrapper);
-      return;
     } else {
       ServiceException se;
       se.message = "Failed to get followers from Redis";
       se.errorCode = ErrorCode::SE_REDIS_ERROR;
       _redis_client_pool->Push(redis_client_wrapper);
       // XTRACE("Failed to get followers from Redis");
+      LOG(error) << "Failed to get followers from Redis";
       throw se;
     }
   } else {

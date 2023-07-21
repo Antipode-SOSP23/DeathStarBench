@@ -1,3 +1,7 @@
+# if you need to update the gen-cpp, run this in a container
+# docker run --rm -it -v "$(pwd)/socialNetwork":/socialNetwork -w /socialNetwork yg397/thrift-microservice-deps:antipode thrift -r --gen cpp social_network.thrift
+#
+
 namespace cpp social_network
 namespace py social_network
 namespace lua social_network
@@ -19,7 +23,8 @@ enum ErrorCode {
   SE_MONGODB_ERROR,
   SE_REDIS_ERROR,
   SE_THRIFT_HANDLER_ERROR,
-  SE_RABBITMQ_CONN_ERROR
+  SE_RABBITMQ_CONN_ERROR,
+  SE_FAKE_ERROR
 }
 
 exception ServiceException {
@@ -68,6 +73,7 @@ struct Post {
 
 struct BaseRpcResponse {
   1: string baggage;
+  2: string cscope_json;
 }
 
 struct LoginRpcResponse {
@@ -206,7 +212,8 @@ service PostStorageService {
   BaseRpcResponse StorePost(
     1: i64 req_id,
     2: Post post,
-    3: map<string, string> carrier
+    3: string cscope_str,
+    4: map<string, string> carrier
   ) throws (1: ServiceException se)
 
   PostRpcResponse ReadPost(
@@ -326,5 +333,24 @@ service MediaService {
       2: list<string> media_types,
       3: list<i64> media_ids,
       4: map<string, string> carrier
+  ) throws (1: ServiceException se)
+}
+
+service AntipodeOracle {
+  bool MakeVisible(
+      1: i64 object_id
+      2: map<string, string> carrier
+  ) throws (1: ServiceException se)
+
+  bool IsVisible(
+      1: i64 object_id
+      2: map<string, string> carrier
+  ) throws (1: ServiceException se)
+}
+
+service WriteHomeTimelineService {
+  bool MakeVisible(
+      1: i64 object_id
+      2: map<string, string> carrier
   ) throws (1: ServiceException se)
 }
