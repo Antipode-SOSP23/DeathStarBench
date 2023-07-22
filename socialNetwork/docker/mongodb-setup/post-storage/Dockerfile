@@ -1,4 +1,4 @@
-FROM mongo
+FROM mongo:4.4.6
 
 RUN set -ex ;\
     apt-get update ;\

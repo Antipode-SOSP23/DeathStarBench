@@ -1,4 +1,4 @@
-FROM mongo
+FROM mongo:4.4.6
 
 COPY delay.sh /home
 

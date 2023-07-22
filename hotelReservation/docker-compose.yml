@@ -178,7 +178,7 @@ services:
     cpuset: "10"
 
   mongodb-geo:
-    image: mongo
+    image: mongo:4.4.6
     container_name: 'hotel_reserv_geo_mongo'
     # hostname: geo-db
     ports:
@@ -186,10 +186,10 @@ services:
     restart: always
     cpuset: "11"
     volumes:
-      - geo:/data/db  
+      - geo:/data/db
 
   mongodb-profile:
-    image: mongo
+    image: mongo:4.4.6
     container_name: 'hotel_reserv_profile_mongo'
     hostname: profile-db
     ports:
@@ -197,10 +197,10 @@ services:
     restart: always
     cpuset: "12"
     volumes:
-      - profile:/data/db    
+      - profile:/data/db
 
   mongodb-rate:
-    image: mongo
+    image: mongo:4.4.6
     container_name: 'hotel_reserv_rate_mongo'
     hostname: rate-db
     ports:
@@ -208,10 +208,10 @@ services:
     restart: always
     cpuset: "13"
     volumes:
-      - rate:/data/db   
+      - rate:/data/db
 
   mongodb-recommendation:
-    image: mongo
+    image: mongo:4.4.6
     hostname: recommendation-db
     container_name: 'hotel_reserv_recommendation_mongo'
     ports:
@@ -220,9 +220,9 @@ services:
     cpuset: "14"
     volumes:
       - recommendation:/data/db
-    
+
   mongodb-reservation:
-    image: mongo
+    image: mongo:4.4.6
     container_name: 'hotel_reserv_reservation_mongo'
     hostname: reservation-db
     ports:
@@ -230,10 +230,10 @@ services:
     restart: always
     cpuset: "15"
     volumes:
-      - reservation:/data/db 
+      - reservation:/data/db
 
   mongodb-user:
-    image: mongo
+    image: mongo:4.4.6
     container_name: 'hotel_reserv_user_mongo'
     hostname: user-db
     ports:
@@ -242,7 +242,7 @@ services:
     cpuset: "16"
     volumes:
       - user:/data/db
-    
+
 volumes:
   geo:
   profile:
