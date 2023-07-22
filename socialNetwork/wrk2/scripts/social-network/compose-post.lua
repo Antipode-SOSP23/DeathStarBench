@@ -1,4 +1,4 @@
-require "socket"
+socket = require "socket"
 JSON = require("JSON")
 stringx = require "pl.stringx"
 tablex = require "pl.tablex"

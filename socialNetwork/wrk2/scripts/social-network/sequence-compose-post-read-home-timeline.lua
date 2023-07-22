@@ -1,4 +1,4 @@
-local socket = require "socket"
+socket = require "socket"
 math.randomseed(socket.gettime()*1000)
 math.random(); math.random(); math.random()
 JSON = require("JSON")
