@@ -30,5 +30,4 @@ RUN set -ex ;\
     make clean ;\
     make
 
-WORKDIR /wrk2
 CMD /wrk2/wrk
