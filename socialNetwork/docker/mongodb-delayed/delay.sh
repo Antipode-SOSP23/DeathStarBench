@@ -6,6 +6,7 @@ CORRELATION=$([ "$4" = "0%" ] && echo "" || echo "$4")
 DISTRIBUTION=$([ "$5" = "uniform" ] && echo "" || echo "distribution $5")
 
 ifconfig -a | grep -e '^eth' | cut -d ':' -f 1 | while read -r INTERFACE ; do
+  echo ">> Handling $INTERFACE"
   # clean existing rules
   echo "Removing old rules ..."
   tc qdisc del dev $INTERFACE root

@@ -1,4 +1,4 @@
-FROM mongo:4.4.6
+FROM mongo:4.2
 
 COPY delay.sh /home
 
@@ -10,6 +10,7 @@ RUN set -ex ;\
         iproute2 \
         iputils-ping \
         dnsutils \
+        vim \
         ;\
     rm -rf /var/lib/apt/lists/* ;\
     chmod 777 /home/delay.sh
