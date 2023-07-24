@@ -128,7 +128,7 @@ services:
     hostname: home-timeline-redis-us
     # ports:
       # - 6381:6379
-    command: redis-server --slaveof home-timeline-redis-eu 6379 --replica-read-only no
+    command: 'redis-server --slaveof home-timeline-redis-eu 6379 --replica-read-only no'
     restart: 'no'
     links:
       - home-timeline-redis-eu
