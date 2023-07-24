@@ -586,7 +586,7 @@ services:
         max_attempts: 3
 
   write-home-timeline-rabbitmq-setup:
-    image: rabbitmq-setup
+    image: rabbitmq-setup:3.8
     environment:
       RABBITMQ_ERLANG_COOKIE: "WRITE-HOME-TIMELINE-RABBITMQ"
     restart: 'no'
