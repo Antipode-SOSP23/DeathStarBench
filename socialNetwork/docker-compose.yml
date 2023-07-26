@@ -54,6 +54,7 @@ services:
     hostname: write-home-timeline-service-eu
     environment:
       ZONE: eu
+      ANTIPODE: 0
     restart: 'no'
     command: dockerize -wait tcp://write-home-timeline-rabbitmq-setup:8000 -wait tcp://write-home-timeline-rabbitmq-eu:5672 -wait-retry-interval 10s -timeout 300s WriteHomeTimelineService
     deploy:
@@ -65,6 +66,7 @@ services:
     hostname: write-home-timeline-service-us
     environment:
       ZONE: us
+      ANTIPODE: 0
     restart: 'no'
     command: dockerize -wait tcp://write-home-timeline-rabbitmq-setup:8000 -wait tcp://write-home-timeline-rabbitmq-us:5672 -wait-retry-interval 10s -timeout 300s WriteHomeTimelineService
     deploy:
