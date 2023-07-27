@@ -102,8 +102,11 @@ bool OnReceivedWorker(const AMQP::Message &msg) {
     // -ANTIPODE
     //----------
     high_resolution_clock::time_point t1 = high_resolution_clock::now();
+    Cscope cscope;
     // ANTIPODE-TOGGLE
-    Cscope cscope = Cscope::from_json(msg_json["cscope_str"].dump());
+    if (is_antipode_enabled()) {
+      cscope = Cscope::from_json(msg_json["cscope_str"].dump());
+    }
 
     //----------
     // CENTRALIZED
@@ -136,11 +139,13 @@ bool OnReceivedWorker(const AMQP::Message &msg) {
     // DISTRIBUTED
     //----------
     // ANTIPODE-TOGGLE
-    mongoc_client_t *mongodb_client = mongoc_client_pool_pop(_mongodb_client_pool);
-    AntipodeMongodb antipode_client = AntipodeMongodb(mongodb_client, "post");
-    cscope = antipode_client.barrier(cscope);
-    antipode_client.close();
-    mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+    if (is_antipode_enabled()) {
+      mongoc_client_t *mongodb_client = mongoc_client_pool_pop(_mongodb_client_pool);
+      AntipodeMongodb antipode_client = AntipodeMongodb(mongodb_client, "post");
+      cscope = antipode_client.barrier(cscope);
+      antipode_client.close();
+      mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
+    }
     //----------
     // DISTRIBUTED
     //----------

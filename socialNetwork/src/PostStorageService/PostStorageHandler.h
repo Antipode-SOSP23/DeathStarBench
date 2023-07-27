@@ -220,15 +220,17 @@ void PostStorageHandler::StorePost(
   //----------
   // -ANTIPODE
   //----------
-  // Start Antipode client
-  AntipodeMongodb* antipode_client = new AntipodeMongodb(mongodb_client, "post");
+  // we parse the cscope even if empty
   Cscope cscope = Cscope::from_json(cscope_str);
-
-  // insert cscope_id into the transaction
-  // antipode_client->inject(session, cscope_id, "post-storage-service", "post-storage", &oid);
 
   // ANTIPODE-TOGGLE
   if (is_antipode_enabled()) {
+    // Start Antipode client
+    AntipodeMongodb* antipode_client = new AntipodeMongodb(mongodb_client, "post");
+    // insert cscope_id into the transaction
+    // antipode_client->inject(session, cscope_id, "post-storage-service", "post-storage", &oid);
+
+    // in this version we change the schema of the table
     char append_id[25];
     bson_oid_to_string(&oid, append_id);
     cscope = cscope.append(std::string(append_id), "post-storage-service", "post-storage");
@@ -257,7 +259,9 @@ void PostStorageHandler::StorePost(
   // -ORIGINAL
   //----------
   // ANTIPODE-TOGGLE
-  // cscope = cscope.close_branch("post-storage");
+  if (is_antipode_enabled()) {
+    cscope = cscope.close_branch("post-storage");
+  }
   //----------
   // -ANTIPODE
   //----------
