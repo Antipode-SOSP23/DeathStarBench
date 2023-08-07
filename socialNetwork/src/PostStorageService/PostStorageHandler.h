@@ -233,7 +233,8 @@ void PostStorageHandler::StorePost(
     // in this version we change the schema of the table
     char append_id[25];
     bson_oid_to_string(&oid, append_id);
-    cscope = cscope.append(std::string(append_id), "post-storage-service", "post-storage");
+    BSON_APPEND_UTF8(new_doc, "cid", cscope._id.c_str());
+    cscope = cscope.append(std::string(append_id));
   }
 
   //----------
@@ -259,18 +260,13 @@ void PostStorageHandler::StorePost(
   // -ORIGINAL
   //----------
 
-  // ANTIPODE-TOGGLE
-  if (is_antipode_enabled()) {
-    cscope = cscope.close_branch("post-storage");
-  }
-  //----------
-  // -ANTIPODE
-  //----------
-
   // eval
   ts = high_resolution_clock::now();
   ts_int = duration_cast<milliseconds>(ts.time_since_epoch()).count();
   span->SetTag("poststorage_post_written_ts", std::to_string(ts_int));
+  //----------
+  // -ANTIPODE
+  //----------
 
   bson_destroy (new_doc);
   bson_destroy (opts);

@@ -723,8 +723,7 @@ void ComposePostHandler::_ComposeAndUpload(
   //----------
   // -ANTIPODE
   //----------
-  Cscope cscope = antipode::Cscope("post-storage");
-  cscope = cscope.open_branch("post-storage");
+  Cscope cscope = antipode::Cscope();
   //----------
   // -ANTIPODE
   //----------

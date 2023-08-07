@@ -40,12 +40,10 @@ bool is_antipode_enabled() {
 class Cscope {
   public:
     struct append_t {
-      std::string txid;
-      std::string caller;
-      std::string target;
+      std::string wid;
 
       friend std::ostream& operator<<(std::ostream& os, append_t const& a) {
-        os << "<#" << a.txid << "|" << a.target << "@" << a.caller << ">";
+        os << "<#" << a.wid << ">";
       }
 
       std::string to_string(append_t const& a) {
@@ -57,37 +55,22 @@ class Cscope {
       // This method lets cereal know which data members to serialize
       template<class Archive>
       void serialize(Archive& archive) {
-        archive( CEREAL_NVP(txid), CEREAL_NVP(caller), CEREAL_NVP(target) );
+        archive( CEREAL_NVP(wid) );
       }
     };
 
     std::string _id;
-    std::string _rendezvous;
-    std::list<append_t> _append_list;
-    std::set<std::string> _open_branches;
-    std::set<std::string> _closed_branches;
+    std::list<append_t> _wid_list;
 
-    Cscope(); // no rendezvous
-    Cscope(std::string); // with rendezvous
-    Cscope(std::string, std::string, std::list<append_t>, std::set<std::string>, std::set<std::string>); // copy of existing
+    Cscope();
+    Cscope(std::string, std::list<append_t>); // copy of existing
 
-    Cscope append(std::string, std::string, std::string);
-    Cscope open_branch(std::string);
-    Cscope close_branch(std::string);
+    Cscope append(std::string);
     Cscope merge(Cscope cscope);
-    bool find_by_caller(std::list<std::string>);
 
     friend std::ostream & operator<<(std::ostream &os, const Cscope& c) {
-      os << " #" << c._id << " ; @" << c._rendezvous << " ; [";
-      for (auto& a : c._append_list) {
-        os << a;
-      }
-      os << "] ; O[";
-      for (auto& a : c._open_branches) {
-        os << a;
-      }
-      os << "] - C[";
-      for (auto& a : c._closed_branches) {
+      os << " #" << c._id << " ; [";
+      for (auto& a : c._wid_list) {
         os << a;
       }
       os << "]";
@@ -97,7 +80,7 @@ class Cscope {
     friend class cereal::access;
     template <class Archive>
     void serialize(Archive& archive) {
-      archive( CEREAL_NVP(_id), CEREAL_NVP(_rendezvous), CEREAL_NVP(_append_list), CEREAL_NVP(_open_branches), CEREAL_NVP(_closed_branches) );
+      archive( CEREAL_NVP(_id), CEREAL_NVP(_wid_list) );
     }
 
     std::string to_json() {
@@ -127,64 +110,20 @@ Cscope::Cscope() {
   boost::uuids::uuid id = boost::uuids::random_generator()();
   _id = boost::uuids::to_string(id);
 }
-Cscope::Cscope(std::string rendezvous) {
-  boost::uuids::uuid id = boost::uuids::random_generator()();
-  _id = boost::uuids::to_string(id);
-  _rendezvous = rendezvous;
-}
-Cscope::Cscope(std::string id, std::string rendezvous, std::list<append_t> append_list, std::set<std::string> open_branches, std::set<std::string> closed_branches) {
+Cscope::Cscope(std::string id, std::list<append_t> wid_list) {
   _id = id;
-  _rendezvous = rendezvous;
-  _append_list = append_list;
-  _open_branches = open_branches;
-  _closed_branches = closed_branches;
+  _wid_list = wid_list;
 }
 
 // API
-Cscope Cscope::append(std::string txid, std::string caller, std::string target) {
+Cscope Cscope::append(std::string wid) {
   append_t new_append;
-  new_append.txid = txid;
-  new_append.caller = caller;
-  new_append.target = target;
+  new_append.wid = wid;
+  std::list<append_t> new_wid_list = _wid_list;
+  new_wid_list.push_back(new_append);
 
-  std::list<append_t> new_append_list = _append_list;
-  new_append_list.push_back(new_append);
-
-  return Cscope(_id, _rendezvous, new_append_list, _open_branches, _closed_branches);
+  return Cscope(_id, new_wid_list);
 }
-
-Cscope Cscope::open_branch(std::string service_id) {
-  std::set<std::string> new_open_branches = _open_branches;
-  new_open_branches.insert(service_id);
-
-  return Cscope(_id, _rendezvous, _append_list, new_open_branches, _closed_branches);
-}
-
-Cscope Cscope::close_branch(std::string service_id) {
-  std::set<std::string> new_open_branches = _open_branches;
-  new_open_branches.erase(service_id);
-
-  std::set<std::string> new_closed_branches = _closed_branches;
-  new_closed_branches.insert(service_id);
-
-  return Cscope(_id, _rendezvous, _append_list, new_open_branches, new_closed_branches);
-}
-
-bool Cscope::find_by_caller(std::list<std::string> callers) {
-  std::list<std::string> append_list_callers;
-  for (append_t &append: _append_list) {
-    append_list_callers.push_back(append.caller);
-  }
-
-  for (std::string caller: callers) {
-    if (std::find(std::begin(append_list_callers), std::end(append_list_callers), caller) == std::end(append_list_callers)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 
 //----------------------
 // MongoDB
@@ -383,38 +322,55 @@ Cscope AntipodeMongodb::barrier(Cscope cscope) {
   mongoc_read_prefs_t *read_prefs;
   read_prefs = mongoc_read_prefs_new(MONGOC_READ_SECONDARY);
 
-  for (Cscope::append_t& a : cscope._append_list) {
+  // We assume writes to post datastore only
+  auto post_collection = mongoc_client_get_collection(_client, "post", "post");
+
+  // We first query by context id
+  bson_t *query_cid = bson_new();
+  BSON_APPEND_UTF8(query_cid, "cid", cscope._id.c_str());
+  bool read_cid = false;
+  while(!read_cid) {
+    mongoc_cursor_t *read_cid_cursor = mongoc_collection_find_with_opts(post_collection, query_cid, read_opts, read_prefs);
+    const bson_t *read_cid_doc;
+    read_cid = mongoc_cursor_next(read_cid_cursor, &read_cid_doc);
+
+    bson_error_t cid_error;
+    if (mongoc_cursor_error (read_cid_cursor, &cid_error)) {
+      LOG(error) << "An error occurred: " << cid_error.message;
+      continue;
+    }
+    LOG(error) << "[ANTIPODE] Was context #" << cscope._id << " found at " << std::getenv("ZONE") << " replica? " << read_cid;
+    mongoc_cursor_destroy(read_cid_cursor);
+  }
+  bson_destroy(query_cid);
+
+  //------
+  // Now we search by object
+  for (Cscope::append_t& a : cscope._wid_list) {
+    // init query object
+    bson_t *query = bson_new();
+    bson_oid_t oid;
+    bson_oid_init_from_string (&oid, a.wid.c_str());
+    BSON_APPEND_OID(query, "_id", &oid);
+
     bool read_post = false;
     while(!read_post) {
-      // TODO: colleciton should be inside the append list
-      // append_list should be more like a KV store so extra fields would be added
-      // that allow for different datastores to be queried
-      // And here is where we would use `a.target`
-      auto post_collection = mongoc_client_get_collection(_client, "post", "post");
-
-      bson_t *query = bson_new();
-      bson_oid_t oid;
-      bson_oid_init_from_string (&oid, a.txid.c_str());
-      BSON_APPEND_OID(query, "_id", &oid);
       mongoc_cursor_t *read_cursor = mongoc_collection_find_with_opts(post_collection, query, read_opts, read_prefs);
-
       const bson_t *read_doc;
       read_post = mongoc_cursor_next(read_cursor, &read_doc);
-
       bson_error_t error;
       if (mongoc_cursor_error (read_cursor, &error)) {
         LOG(error) << "An error occurred: " << error.message;
         continue;
       }
 
-      // LOG(debug) << "[ANTIPODE] Was post #" << a.txid << " found at " << std::getenv("ZONE") << " replica? " << read_post;
-
-      bson_destroy(query);
+      LOG(error) << "[ANTIPODE] Was post #" << a.wid << " found at " << std::getenv("ZONE") << " replica? " << read_post;
       mongoc_cursor_destroy(read_cursor);
-      mongoc_collection_destroy(post_collection);
     }
+    bson_destroy(query);
   }
 
+  mongoc_collection_destroy(post_collection);
   bson_destroy (read_opts);
   mongoc_read_prefs_destroy (read_prefs);
   mongoc_read_concern_destroy (read_concern);
