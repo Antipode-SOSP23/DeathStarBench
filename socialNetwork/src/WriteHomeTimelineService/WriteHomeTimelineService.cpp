@@ -102,11 +102,7 @@ bool OnReceivedWorker(const AMQP::Message &msg) {
     // -ANTIPODE
     //----------
     high_resolution_clock::time_point t1 = high_resolution_clock::now();
-    Cscope cscope;
-    // ANTIPODE-TOGGLE
-    if (is_antipode_enabled()) {
-      cscope = Cscope::from_json(msg_json["cscope_str"].dump());
-    }
+    Cscope cscope = Cscope::from_json(msg_json["cscope_str"].dump());
 
     //----------
     // CENTRALIZED
