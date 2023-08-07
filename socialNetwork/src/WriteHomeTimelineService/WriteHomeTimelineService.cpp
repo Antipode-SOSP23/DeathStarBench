@@ -241,6 +241,7 @@ bool OnReceivedWorker(const AMQP::Message &msg) {
     span->SetTag("consistency_bool", read_post);
     time_span = mongoread_ts - t2;
     span->SetTag("consistency_mongoread_duration", std::to_string(time_span.count()));
+    span->SetTag("notification_size_bytes", std::to_string(msg.bodySize()));
 
     //----------
     // -EVAL CONSISTENCY ERRORS
