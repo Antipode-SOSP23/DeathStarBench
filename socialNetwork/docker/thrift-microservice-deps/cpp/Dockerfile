@@ -18,9 +18,15 @@ ARG BUILD_DEPS="ca-certificates \
                 lua5.1 \
                 lua5.1-dev"
 
+ARG RDV_DEPS="autoconf \
+              curl \
+              zip \
+              unzip \
+              tar"
+
 RUN set -ex ;\
   apt-get update ;\
-  apt-get install -y --no-install-recommends ${BUILD_DEPS} ;\
+  apt-get install -y --no-install-recommends ${BUILD_DEPS} ${RDV_DEPS} ;\
   rm -rf /var/lib/apt/lists/*
 
 #---------
@@ -227,37 +233,48 @@ RUN set -ex ;\
     cd /tmp ;\
     rm -rf SimpleAmqpClient
 
-#---------
-# Protobuf
-#---------
-ARG LIB_PROTOBUF_VERSION=2.6.1
+#-------------
+# CMake update
+#-------------
+
+ENV MY_INSTALL_DIR=$HOME/.local
+ENV PATH="$MY_INSTALL_DIR/bin:$PATH"
+ARG CMAKE_VERSION=3.19.6
+RUN mkdir -p $MY_INSTALL_DIR
+RUN wget -q -O cmake-linux.sh https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-Linux-x86_64.sh ;\
+    sh cmake-linux.sh -- --skip-license --prefix=$MY_INSTALL_DIR ;\
+    rm cmake-linux.sh
+
+#------------------
+# gRPC and Protobuf
+#------------------
+ARG LIB_GRPC_CPP_VERSION=1.30.1
 RUN set -ex ;\
     cd /tmp ;\
-    wget https://github.com/protocolbuffers/protobuf/releases/download/v${LIB_PROTOBUF_VERSION}/protobuf-${LIB_PROTOBUF_VERSION}.tar.gz ;\
-    gunzip protobuf-${LIB_PROTOBUF_VERSION}.tar.gz ;\
-    tar -xvf protobuf-${LIB_PROTOBUF_VERSION}.tar ;\
-    cd protobuf-${LIB_PROTOBUF_VERSION} ;\
-    ./configure --prefix=/usr ;\
-    make ;\
+    git clone --recurse-submodules -b v${LIB_GRPC_CPP_VERSION} --depth 1 https://github.com/grpc/grpc ;\
+    cd grpc ;\
+    mkdir -p cmake/build ;\
+    cd cmake/build ;\
+    cmake -DgRPC_INSTALL=ON -DgRPC_BUILD_TESTS=OFF -DgRPC_BUILD_CSHARP_EXT=OFF -DCMAKE_INSTALL_PREFIX=$MY_INSTALL_DIR ../.. ;\
+    make -j$(nproc) ;\
     make install ;\
     cd /tmp ;\
-    rm -rf protobuf-${LIB_PROTOBUF_VERSION}.tar \
-           protobuf-${LIB_PROTOBUF_VERSION}
+    rm -rf grpc
 
 #---------
 # XTrace
 #---------
+RUN mkdir /tmp/xtrace-cpp
+COPY /xtrace-proto3 /tmp/xtrace-proto3
 RUN set -ex ;\
-    cd /tmp ;\
-    git clone https://github.com/JonathanMace/xtrace-cpp.git ;\
-    cd xtrace-cpp ;\
+    cd /tmp/xtrace-proto3 ;\
     mkdir build ;\
     cd build ;\
     cmake .. ;\
     make ;\
     make install ;\
     cd /tmp ;\
-    rm -rf xtrace-cpp
+    rm -rf xtrace-proto3
 
 #---------
 # Dockerize

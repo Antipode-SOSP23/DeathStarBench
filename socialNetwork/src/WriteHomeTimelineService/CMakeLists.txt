@@ -36,8 +36,10 @@ target_link_libraries(
     /usr/local/lib/libtacopie.a
     jaegertracing
     xtrace
-    protobuf
+    protobuf::libprotobuf
     tbb
+    rendezvous_lib
+    rendezvous_grpc_lib
 )
 
 install(TARGETS WriteHomeTimelineService DESTINATION ./)

@@ -5,6 +5,7 @@
 #include <string>
 #include <future>
 #include <chrono>
+#include <vector>
 
 #include <mongoc.h>
 #include <libmemcached/memcached.h>
@@ -26,6 +27,11 @@
 #include <xtrace/xtrace.h>
 #include <xtrace/baggage.h>
 
+#include <grpcpp/grpcpp.h>
+#include "../../gen-protos/rendezvous.grpc.pb.h"
+#include "../../rendezvous/include/rendezvous.h"
+#include "../../rendezvous/include/storage_mongodb.h"
+
 // for clock usage
 using namespace std::chrono;
 using namespace antipode;
@@ -39,7 +45,9 @@ class PostStorageHandler : public PostStorageServiceIf {
       memcached_pool_st *,
       mongoc_client_pool_t *,
       ClientPool<ThriftClient<AntipodeOracleClient>> *,
-      std::string);
+      std::shared_ptr<grpc::Channel>,
+      std::string,
+      std::vector<std::string>);
   ~PostStorageHandler() override = default;
 
   void StorePost(BaseRpcResponse& response, int64_t req_id, const Post &post,
@@ -56,7 +64,9 @@ class PostStorageHandler : public PostStorageServiceIf {
   memcached_pool_st *_memcached_client_pool;
   mongoc_client_pool_t *_mongodb_client_pool;
   ClientPool<ThriftClient<AntipodeOracleClient>> *_antipode_oracle_client_pool;
+  std::shared_ptr<grpc::Channel> _rendezvous_channel;
   std::string _zone;
+  std::vector<std::string> _zones;
   std::exception_ptr _post_storage_teptr;
 };
 
@@ -64,11 +74,15 @@ PostStorageHandler::PostStorageHandler(
     memcached_pool_st *memcached_client_pool,
     mongoc_client_pool_t *mongodb_client_pool,
     ClientPool<social_network::ThriftClient<AntipodeOracleClient>> *antipode_oracle_client_pool,
-    std::string zone) {
+    std::shared_ptr<grpc::Channel> rendezvous_channel,
+    std::string zone,
+    std::vector<std::string> zones) {
   _memcached_client_pool = memcached_client_pool;
   _mongodb_client_pool = mongodb_client_pool;
   _antipode_oracle_client_pool = antipode_oracle_client_pool;
+  _rendezvous_channel = rendezvous_channel;
   _zone = zone;
+  _zones = zones;
 }
 
 // Launch the pool with as much threads as cores
@@ -115,6 +129,71 @@ void PostStorageHandler::StorePost(
       "StorePost",
       { opentracing::ChildOf(parent_span->get()) });
   opentracing::Tracer::Global()->Inject(span->context(), writer);
+
+  // -----------------------------------------
+  // RENDEZVOUS > open post-storage write-post
+  // -----------------------------------------
+  std::string rv_bid;
+  std::string rv_bid_write_post;
+  if (rendezvous::is_rendezvous_enabled()) {
+    // get service's main branch id
+    auto it = carrier.find("rv_bid");
+    if (it != carrier.end()) {
+      rv_bid = it->second;
+    }
+    else {
+      LOG(warning) << "[RENDEZVOUS] Error fetching rv_bid from context carrier";
+    }
+
+    std::string async_zone;
+    it = carrier.find("rv_zone");
+    if (it != carrier.end()) {
+      async_zone = it->second;
+    }
+    else {
+      LOG(warning) << "[RENDEZVOUS] Error fetching async_zone from context carrier";
+    }
+
+    int async_zone_i;
+    it = carrier.find("rv_zone_i");
+    if (it != carrier.end()) {
+      async_zone_i = atoi((it->second).c_str());
+    }
+    else {
+      LOG(warning) << "[RENDEZVOUS] Error fetching async_zone from context carrier";
+    }
+
+    std::string next_async_zone = rendezvous::next_async_zone(async_zone, async_zone_i++);
+
+    high_resolution_clock::time_point register_start = high_resolution_clock::now();
+    auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+    grpc::ClientContext grpc_ctx;
+    rendezvous::RegisterBranchMessage rv_request;
+    rendezvous::RegisterBranchResponse rv_response;
+    rv_request.set_rid(std::to_string(req_id));
+    rv_request.set_service("post-storage");
+    rv_request.set_tag("write-post");
+    rv_request.set_monitor(true);
+    rv_request.set_current_service_bid(rv_bid);
+    rv_request.set_async_zone(next_async_zone);
+    for (const auto& zone: _zones)
+      rv_request.add_regions(zone);
+
+    //LOG(debug) << "[RENDEZVOUS] Sending register 'post-storage write-post' branch in zone " << next_async_zone;
+    auto status = rv_stub->RegisterBranch(&grpc_ctx, rv_request, &rv_response);
+    if (status.ok()) {
+      rv_bid_write_post = rv_response.bid();
+    } 
+    else {
+      LOG(warning) << "[RENDEZVOUS] Error registering 'post-storage write-post' branch: " << status.error_message();
+    }
+    duration<double, std::milli> register_duration = high_resolution_clock::now() - register_start;
+    span->SetTag("poststorage_rendezvous_rb_poststorage_writepost_duration", std::to_string(register_duration.count()));
+  }
+  // -----------------------------------------
+  // RENDEZVOUS < open post-storage write-post
+  // -----------------------------------------
 
   mongoc_client_t *mongodb_client = mongoc_client_pool_pop(
       _mongodb_client_pool);
@@ -237,10 +316,62 @@ void PostStorageHandler::StorePost(
     cscope = cscope.append(std::string(append_id));
   }
 
+  bool inserted;
+  high_resolution_clock::time_point write_start = high_resolution_clock::now();
+  // -----------------------
+  // RENDEZVOUS > shim write
+  // -----------------------
+  if (rendezvous::is_rendezvous_enabled()) {
+    // BSON_APPEND_UTF8(new_doc, "rv_bid_write_post", bid.c_str());
+    inserted = rendezvous::StorageMongodb::write(collection, new_doc, rv_bid_write_post, opts, nullptr, &error);
+  }
+  // -----------------------
+  // RENDEZVOUS < shim write
+  // -----------------------
+
+
   //----------
   // -ORIGINAL
   //----------
-  bool inserted = mongoc_collection_insert_one(collection, new_doc, opts, nullptr, &error);
+  else {
+    inserted = mongoc_collection_insert_one(collection, new_doc, opts, nullptr, &error);
+  }
+  duration<double, std::milli> write_duration = high_resolution_clock::now() - write_start;
+  span->SetTag("poststorage_write_duration", std::to_string(write_duration.count()));
+  //----------
+  // -ORIGINAL
+  //----------
+
+  // -------------------------------
+  // RENDEZVOUS > close post-storage
+  // -------------------------------
+  if (rendezvous::is_rendezvous_enabled()) {
+    high_resolution_clock::time_point close_start = high_resolution_clock::now();
+    auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+    //LOG(debug) << "[RENDEZVOUS] Sending close 'post-storage' branch... ";
+
+    grpc::Status status;
+    grpc::ClientContext grpc_ctx;
+    rendezvous::CloseBranchMessage rv_request;
+    rendezvous::Empty rv_response;
+    rv_request.set_bid(rv_bid);
+
+    high_resolution_clock::time_point rendezvous_close_brach_start = high_resolution_clock::now();
+    status = rv_stub->CloseBranch(&grpc_ctx, rv_request, &rv_response);
+
+    if (status.ok()) {
+      // eval
+      duration<double, std::milli> close_branch_duration = high_resolution_clock::now() - close_start;
+      span->SetTag("poststorage_rendezvous_cb_poststorage_duration", std::to_string(close_branch_duration.count()));
+    }
+    else {
+      LOG(warning) << "[RENDEZVOUS] Error closing 'post-storage' branch: " << status.error_message();
+    }
+  }
+  // -------------------------------
+  // RENDEZVOUS < close post-storage
+  // -------------------------------
 
   // XTRACE("MongoInsertPost complete");
   insert_span->Finish();

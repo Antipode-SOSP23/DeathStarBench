@@ -10,6 +10,8 @@
 #include "../utils.h"
 #include "ComposePostHandler.h"
 
+#include <grpcpp/grpcpp.h>
+#include "../../gen-protos/rendezvous.grpc.pb.h"
 
 using apache::thrift::server::TThreadedServer;
 using apache::thrift::transport::TServerSocket;
@@ -26,6 +28,7 @@ int main(int argc, char *argv[]) {
   init_logger();
 
   std::string zone = load_zone();
+  std::vector<std::string> zones = ALL_ZONES;
   std::vector<std::string> interest_zones = load_interest_zones();
 
   SetUpTracer("config/jaeger-config.yml", "compose-post-service");
@@ -34,6 +37,19 @@ int main(int argc, char *argv[]) {
   if (load_config_file("config/service-config.json", &config_json) != 0) {
     exit(EXIT_FAILURE);
   }
+
+  // ----------
+  // RENDEZVOUS
+  // ----------
+  json rendezvous_config_json;
+  if (rendezvous::is_rendezvous_enabled()) {
+    if (load_config_file("config/rendezvous-config.json", &rendezvous_config_json) != 0) {
+      exit(EXIT_FAILURE);
+    }
+  }
+  // ----------
+  // RENDEZVOUS
+  // ----------
 
   int port = config_json["compose-post-service"]["port"];
 
@@ -66,6 +82,21 @@ int main(int argc, char *argv[]) {
   ClientPool<RabbitmqClient> rabbitmq_client_pool("rabbitmq", rabbitmq_addr,
       rabbitmq_port, 0, 10000, 1000);
 
+  // ----------
+  // RENDEZVOUS
+  // ----------
+  std::shared_ptr<grpc::Channel> rendezvous_channel;
+  if (rendezvous::is_rendezvous_enabled()) {
+    std::string rendezvous_addr = rendezvous_config_json["servers"][zone]["addr"];
+    int rendezvous_port = rendezvous_config_json["servers"][zone]["port"];
+    std::string rendezvous_target = rendezvous_addr + ":" + std::to_string(rendezvous_port);
+    rendezvous_channel  = grpc::CreateChannel(rendezvous_target, grpc::InsecureChannelCredentials()); 
+    LOG(info) << "Initializing rendezvous stub on " << rendezvous_target;
+  }
+  // ----------
+  // RENDEZVOUS
+  // ----------
+
   TThreadedServer server(
       std::make_shared<ComposePostServiceProcessor>(
           std::make_shared<ComposePostHandler>(
@@ -73,6 +104,7 @@ int main(int argc, char *argv[]) {
               &post_storage_client_pool,
               &user_timeline_client_pool,
               &rabbitmq_client_pool,
+              rendezvous_channel,
               zone, interest_zones)),
       std::make_shared<TServerSocket>("0.0.0.0", port),
       std::make_shared<TFramedTransportFactory>(),

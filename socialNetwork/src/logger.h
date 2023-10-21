@@ -23,7 +23,7 @@ void init_logger() {
           "[%TimeStamp%] <%Severity%>: %Message%");
   boost::log::core::get()->set_filter (
     boost::log::trivial::severity >= boost::log::trivial::warning
-    // boost::log::trivial::severity >= boost::log::trivial::debug
+    //boost::log::trivial::severity >= boost::log::trivial::debug
   );
 }
 

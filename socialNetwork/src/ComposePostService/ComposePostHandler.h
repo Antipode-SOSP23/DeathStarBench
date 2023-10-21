@@ -26,6 +26,10 @@
 #include <xtrace/xtrace.h>
 #include <xtrace/baggage.h>
 
+#include <grpcpp/grpcpp.h>
+#include "../../gen-protos/rendezvous.grpc.pb.h"
+#include "../../rendezvous/include/rendezvous.h"
+
 #define NUM_COMPONENTS 6
 #define REDIS_EXPIRE_TIME 10
 
@@ -48,6 +52,7 @@ class ComposePostHandler : public ComposePostServiceIf {
       ClientPool<ThriftClient<PostStorageServiceClient>> *,
       ClientPool<ThriftClient<UserTimelineServiceClient>> *,
       ClientPool<RabbitmqClient> *,
+      std::shared_ptr<grpc::Channel>,
       std::string,
       std::vector<std::string>);
 
@@ -78,7 +83,9 @@ class ComposePostHandler : public ComposePostServiceIf {
   ClientPool<ThriftClient<PostStorageServiceClient>> *_post_storage_client_pool;
   ClientPool<ThriftClient<UserTimelineServiceClient>> *_user_timeline_client_pool;
   ClientPool<RabbitmqClient> *_rabbitmq_client_pool;
+  std::shared_ptr<grpc::Channel> _rendezvous_channel;
   std::string _zone;
+  std::string _rv_branch_prefix;
   std::vector<std::string> _interest_zones;
 
   std::exception_ptr _rabbitmq_teptr;
@@ -96,6 +103,8 @@ class ComposePostHandler : public ComposePostServiceIf {
   void _UploadPostHelper(int64_t req_id, const Post &post,
       Cscope &cscope,
       const std::map<std::string, std::string> &carrier,
+      const std::string& rv_bid,
+      const std::string& rv_zone,
       Baggage& baggage, std::promise<Baggage> baggage_promise);
 
   void _UploadHomeTimelineHelper(int64_t req_id, int64_t post_id,
@@ -103,6 +112,8 @@ class ComposePostHandler : public ComposePostServiceIf {
       const std::vector<int64_t> &user_mentions_id,
       Cscope &cscope,
       const std::map<std::string, std::string> &carrier,
+      const std::string& rv_bid,
+      const std::string& rv_zone,
       Baggage& baggage, std::promise<Baggage> baggage_promise);
 };
 
@@ -111,6 +122,7 @@ ComposePostHandler::ComposePostHandler(
     ClientPool<social_network::ThriftClient<PostStorageServiceClient>> *post_storage_client_pool,
     ClientPool<social_network::ThriftClient<UserTimelineServiceClient>> *user_timeline_client_pool,
     ClientPool<RabbitmqClient> *rabbitmq_client_pool,
+    std::shared_ptr<grpc::Channel> rendezvous_channel,
     std::string zone,
     std::vector<std::string> interest_zones) {
   _redis_client_pool = redis_client_pool;
@@ -120,8 +132,10 @@ ComposePostHandler::ComposePostHandler(
   _rabbitmq_teptr = nullptr;
   _post_storage_teptr = nullptr;
   _user_timeline_teptr = nullptr;
+  _rendezvous_channel = rendezvous_channel;
   _zone = zone;
   _interest_zones = interest_zones;
+  _rv_branch_prefix = "composepost_" + _zone;
 }
 
 // Launch the pool with as much threads as cores
@@ -611,7 +625,6 @@ void ComposePostHandler::_ComposeAndUpload(
     { opentracing::ChildOf(parent_span->get()) });
   opentracing::Tracer::Global()->Inject(span->context(), writer);
 
-
   // XTRACE("Redis RetrieveMessages start");
   auto redis_client_wrapper = _redis_client_pool->Pop();
   if (!redis_client_wrapper) {
@@ -672,6 +685,41 @@ void ComposePostHandler::_ComposeAndUpload(
 
   // XTRACE("Redis RetrieveMessages complete");
 
+  // ------------------------------
+  // RENDEZVOUS > open compose-post
+  // ------------------------------
+  /* std::string rv_bid_compose_post;
+  if (rendezvous::is_rendezvous_enabled()) {
+    high_resolution_clock::time_point register_start = high_resolution_clock::now();
+    auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+    grpc::ClientContext grpc_ctx;
+    rendezvous::RegisterBranchMessage rv_request;
+    rendezvous::RegisterBranchResponse rv_response;
+    rv_request.set_rid(std::to_string(req_id));
+    rv_request.set_service("compose-post");
+
+    LOG(debug) << "[RENDEZVOUS] Sending register 'compose-post' branch...";
+    auto status = rv_stub->RegisterBranch(&grpc_ctx, rv_request, &rv_response);
+
+    if (status.ok()) {
+      rv_bid_compose_post = rv_response.bid();
+      // eval
+      duration<double, std::milli> register_duration = high_resolution_clock::now() - register_start;
+      span->SetTag("composepost_rendezvous_rb_composepost_duration", std::to_string(register_duration.count()));
+      // debug
+      LOG(debug) << "[RENDEZVOUS] Received response to register 'compose-post' branch";
+    } else {
+        LOG(warning) << "[RENDEZVOUS] Error registering branch 'compose-post': " << status.error_message();
+    }
+  }
+  else {
+    LOG(debug) << "[RENDEZVOUS] Skipping register 'compose-post' branch...";
+  } */
+  //-------------
+  // < RENDEZVOUS
+  //-------------
+
   // Compose the post
   // XTRACE("Compose Post start");
   Post post;
@@ -728,29 +776,226 @@ void ComposePostHandler::_ComposeAndUpload(
   // -ANTIPODE
   //----------
 
+  // -------------------------------------------------
+  // RENDEZVOUS > open all branches: 
+  // 1. compose-post
+  // 2. post-storage
+  // 3. write-home-timeline @ US
+  // -------------------------------------------------
+  rendezvous::AsyncRequestHelper * rh = new rendezvous::AsyncRequestHelper{};
+  std::string rv_bid_compose_post, rv_zone_post_storage, rv_zone_wht, rv_bid_post_storage, rv_bid_wht;
+
+  if (rendezvous::is_rendezvous_enabled()) {
+    std::vector<std::string> bids = rendezvous::compute_bids(_rv_branch_prefix, std::to_string(req_id), 3, 0);
+    std::vector<std::string> rv_zones = rendezvous::next_async_zones(2, 0);
+    rv_zone_post_storage = rv_zones[0];
+    rv_zone_wht = rv_zones[1];
+    rv_bid_compose_post = bids[0];
+    rv_bid_post_storage = bids[1];
+    rv_bid_wht = bids[2];
+
+    high_resolution_clock::time_point register_start = high_resolution_clock::now();
+    auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+    // async call context
+    grpc::ClientContext * grpc_ctx;
+    grpc::Status * grpc_status;
+    rendezvous::RegisterBranchResponse * rv_response;
+    rendezvous::RegisterBranchMessage rv_request;
+
+    // compose-post
+    //LOG(debug) << "[RENDEZVOUS] Sending async register 'compose-post' branch";
+    grpc_ctx = new grpc::ClientContext();
+    grpc_status = new grpc::Status();
+    rv_response = new rendezvous::RegisterBranchResponse();
+    rv_request.set_rid(std::to_string(req_id));
+    rv_request.set_bid(rv_bid_compose_post);
+    rv_request.set_service("compose-post");
+    rh->rpcs.emplace_back(rv_stub->AsyncRegisterBranch(grpc_ctx, rv_request, &(rh->queue)));
+    rendezvous::saveAsyncCall(rh, grpc_ctx, grpc_status, rv_response);
+
+    // post-storage
+    //LOG(debug) << "[RENDEZVOUS] Sending async register 'post-storage' branch in zone " << rv_zone_post_storage;
+    grpc_ctx = new grpc::ClientContext();
+    grpc_status = new grpc::Status();
+    rv_response = new rendezvous::RegisterBranchResponse();
+    rv_request.set_rid(std::to_string(req_id));
+    rv_request.set_bid(rv_bid_post_storage);
+    rv_request.set_service("post-storage");
+    rv_request.set_async_zone(rv_zone_post_storage);
+    rv_request.set_current_service_bid(rv_bid_compose_post);
+    rh->rpcs.emplace_back(rv_stub->AsyncRegisterBranch(grpc_ctx, rv_request, &(rh->queue)));
+    rendezvous::saveAsyncCall(rh, grpc_ctx, grpc_status, rv_response);
+
+    // write-home-timeline
+    //LOG(debug) << "[RENDEZVOUS] Sending async register 'write-home-timeline' branch in zone " << rv_zone_wht;
+    grpc_ctx = new grpc::ClientContext();
+    grpc_status = new grpc::Status();
+    rv_response = new rendezvous::RegisterBranchResponse();
+    rv_request.set_rid(std::to_string(req_id));
+    rv_request.set_bid(rv_bid_wht);
+    rv_request.set_service("write-home-timeline");
+    rv_request.set_async_zone(rv_zone_wht);
+    rv_request.set_current_service_bid(rv_bid_compose_post);
+    for (const auto& izone: _interest_zones) {
+      rv_request.add_regions(izone);
+    }
+    rh->rpcs.emplace_back(rv_stub->AsyncRegisterBranch(grpc_ctx, rv_request, &(rh->queue)));
+    rendezvous::saveAsyncCall(rh, grpc_ctx, grpc_status, rv_response);
+
+    duration<double, std::milli> register_duration = high_resolution_clock::now() - register_start;
+    span->SetTag("composepost_rendezvous_rb_async_duration", std::to_string(register_duration.count()));
+  }
+
+
+  // ------------------------------
+  // RENDEZVOUS > open post-storage
+  // ------------------------------
+  // initialize rendezvous metadata
+  /* std::string rv_bid_post_storage;
+  if (rendezvous::is_rendezvous_enabled()) {
+    high_resolution_clock::time_point register_start = high_resolution_clock::now();
+    auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+    grpc::ClientContext grpc_ctx;
+    rendezvous::RegisterBranchMessage rv_request;
+    rendezvous::RegisterBranchResponse rv_response;
+    rv_request.set_rid(std::to_string(req_id));
+    rv_request.set_service("post-storage");
+    rv_request.set_async_zone(rv_zone_post_storage);
+    rv_request.set_current_service_bid(rv_bid_compose_post);
+
+    LOG(debug) << "[RENDEZVOUS] Sending register 'post-storage' branch...";
+    auto status = rv_stub->RegisterBranch(&grpc_ctx, rv_request, &rv_response);
+
+    if (status.ok()) {
+      rv_bid_post_storage = rv_response.bid();
+      // eval
+      duration<double, std::milli> register_duration = high_resolution_clock::now() - register_start;
+      span->SetTag("composepost_rendezvous_rb_poststorage_duration", std::to_string(register_duration.count()));
+      // debug
+      LOG(debug) << "[RENDEZVOUS] Received response to register 'post-storage' branch";
+    } else {
+        LOG(warning) << "[RENDEZVOUS] Error registering 'post-storage' branch: " << status.error_message();
+    }
+  } */
+  //-------------------------------
+  // RENDEZVOUS < open post-storage
+  //-------------------------------
+
+  // -------------------------------------
+  // RENDEZVOUS > open write-home-timeline
+  // -------------------------------------
+  // initialize rendezvous metadata
+  /* std::string rv_bid_wht;
+  if (rendezvous::is_rendezvous_enabled()) {
+    high_resolution_clock::time_point register_branch_start = high_resolution_clock::now();
+    auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+    grpc::ClientContext grpc_ctx;
+    rendezvous::RegisterBranchMessage rv_request;
+    rendezvous::RegisterBranchResponse rv_response;
+    rv_request.set_rid(std::to_string(req_id));
+    rv_request.set_service("write-home-timeline");
+    rv_request.set_async_zone(rv_zone_wht);
+    rv_request.set_current_service_bid(rv_bid_compose_post);
+    for (const auto& izone: _interest_zones) {
+      rv_request.add_regions(izone);
+    }
+
+    LOG(debug) << "[RENDEZVOUS] Sending register 'write-home-timeline' branch...";
+    auto status = rv_stub->RegisterBranch(&grpc_ctx, rv_request, &rv_response);
+
+    if (status.ok()) {
+      rv_bid_wht = rv_response.bid();
+      // eval
+      duration<double, std::milli> register_branch_duration = high_resolution_clock::now() - register_branch_start;
+      span->SetTag("composepost_rendezvous_rb_wht_duration", std::to_string(register_branch_duration.count()));
+      LOG(debug) << "[RENDEZVOUS] Received response to register 'write-home-timeline' branch";
+    } else {
+      LOG(warning) << "[RENDEZVOUS] Error registering 'write-home-timeline' branch: " << status.error_message();
+    }
+  }*/
+  //--------------------------------------
+  // RENDEZVOUS < open write-home-timeline
+  //--------------------------------------
+
   // Upload the post
   // XTRACE("Upload Post start");
   Baggage upload_post_helper_baggage = BRANCH_CURRENT_BAGGAGE();
   std::promise<Baggage> upload_post_promise;
   std::future<Baggage> upload_post_future = upload_post_promise.get_future();
-  // std::thread upload_post_worker(&ComposePostHandler::_UploadPostHelper, this, req_id, std::ref(post), std::ref(cscope), std::ref(carrier), std::ref(upload_post_helper_baggage), std::ref(upload_post_promise));
-  _UploadPostHelper(req_id, post, cscope, carrier, upload_post_helper_baggage, std::move(upload_post_promise));
+  //std::thread upload_post_worker(&ComposePostHandler::_UploadPostHelper, this, req_id, std::ref(post), std::ref(cscope), std::ref(carrier), std::ref(upload_post_helper_baggage), std::ref(upload_post_promise));
+  //_UploadPostHelper(req_id, post, cscope, carrier, upload_post_helper_baggage, std::move(upload_post_promise));
+  auto upload_post_task = [&]() {
+    this->_UploadPostHelper(req_id, post, cscope, carrier, rv_bid_post_storage, rv_zone_post_storage, upload_post_helper_baggage, std::move(upload_post_promise));
+  };
+  std::thread upload_post_worker(upload_post_task);
 
   Baggage upload_home_timeline_helper_baggage = BRANCH_CURRENT_BAGGAGE();
   std::promise<Baggage> upload_home_promise;
   std::future<Baggage> upload_home_future = upload_home_promise.get_future();
-  // std::thread upload_home_timeline_worker(&ComposePostHandler::_UploadHomeTimelineHelper, this, req_id, post.post_id, post.creator.user_id, post.timestamp, std::ref(user_mentions_id), std::ref(cscope), std::ref(carrier), std::ref(upload_home_timeline_helper_baggage), std::move(upload_home_promise));
-  _UploadHomeTimelineHelper(req_id, post.post_id, post.creator.user_id, post.timestamp, user_mentions_id, cscope, carrier, upload_home_timeline_helper_baggage, std::move(upload_home_promise));
+  //std::thread upload_home_timeline_worker(&ComposePostHandler::_UploadHomeTimelineHelper, this, req_id, post.post_id, post.creator.user_id, post.timestamp, std::ref(user_mentions_id), std::ref(cscope), std::ref(carrier), std::ref(upload_home_timeline_helper_baggage), std::move(upload_home_promise));
+  //_UploadHomeTimelineHelper(req_id, post.post_id, post.creator.user_id, post.timestamp, user_mentions_id, cscope, carrier, upload_home_timeline_helper_baggage, std::move(upload_home_promise));
+  auto upload_home_timeline_task = [&]() {
+    this->_UploadHomeTimelineHelper(req_id, post.post_id, post.creator.user_id, post.timestamp, user_mentions_id, cscope, carrier, rv_bid_wht, rv_zone_wht, upload_home_timeline_helper_baggage, std::move(upload_home_promise));
+  };
+  std::thread upload_home_timeline_worker(upload_home_timeline_task);
 
   Baggage upload_user_timeline_helper_baggage = BRANCH_CURRENT_BAGGAGE();
   std::promise<Baggage> upload_user_promise;
   std::future<Baggage> upload_user_future = upload_user_promise.get_future();
-  // std::thread upload_user_timeline_worker(&ComposePostHandler::_UploadUserTimelineHelper, this, req_id, post.post_id, post.creator.user_id, post.timestamp, std::ref(carrier), std::ref(upload_user_timeline_helper_baggage), std::move(upload_user_promise));
-  _UploadUserTimelineHelper(req_id, post.post_id, post.creator.user_id, post.timestamp, carrier, upload_user_timeline_helper_baggage, std::move(upload_user_promise));
+  //std::thread upload_user_timeline_worker(&ComposePostHandler::_UploadUserTimelineHelper, this, req_id, post.post_id, post.creator.user_id, post.timestamp, std::ref(carrier), std::ref(upload_user_timeline_helper_baggage), std::move(upload_user_promise));
+  //_UploadUserTimelineHelper(req_id, post.post_id, post.creator.user_id, post.timestamp, carrier, upload_user_timeline_helper_baggage, std::move(upload_user_promise));
+  auto upload_user_timeline_task = [&]() {
+    this->_UploadUserTimelineHelper(req_id, post.post_id, post.creator.user_id, post.timestamp, carrier, upload_user_timeline_helper_baggage, std::move(upload_user_promise));
+  };
+  std::thread upload_user_timeline_worker(upload_user_timeline_task);
 
-  // upload_post_worker.join();
-  // upload_user_timeline_worker.join();
-  // upload_home_timeline_worker.join();
+
+  // -------------------------------
+  // RENDEZVOUS > close compose-post
+  // -------------------------------
+
+  if (rendezvous::is_rendezvous_enabled()) {
+    high_resolution_clock::time_point async_complete_start = high_resolution_clock::now();
+    //LOG(debug) << "[RENDEZVOUS] Completing all previous async register branches...";
+    bool ok = rendezvous::CompleteAsyncCalls(rh);
+    if (!ok) {
+      LOG(warning) << "[RENDEZVOUS] Error completing async register branches.";
+    }
+    //LOG(debug) << "[RENDEZVOUS] Done completing all previous async register branches with OK STATUS = " << ok;
+    duration<double, std::milli> async_complete_duration = high_resolution_clock::now() - async_complete_start;
+    span->SetTag("composepost_rendezvous_rb_async_complete_duration", std::to_string(async_complete_duration.count()));
+  
+    high_resolution_clock::time_point close_start = high_resolution_clock::now();
+    auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+    //LOG(debug) << "[RENDEZVOUS] Sending close 'compose-post' branch with visible bids";
+    grpc::ClientContext grpc_ctx;
+    rendezvous::CloseBranchMessage rv_request;
+    rendezvous::Empty rv_response;
+    rv_request.set_bid(rv_bid_compose_post);
+    //rv_request.add_visible_bids(rv_bid_post_storage);
+    //rv_request.add_visible_bids(rv_bid_wht);
+    auto status = rv_stub->CloseBranch(&grpc_ctx, rv_request, &rv_response);
+
+    if (status.ok()) {
+      // eval
+      duration<double, std::milli> close_duration = high_resolution_clock::now() - close_start;
+      span->SetTag("composepost_rendezvous_cb_composepost_duration", std::to_string(close_duration.count()));
+      //LOG(debug) << "[RENDEZVOUS] Received response to close 'compose-post' branch with context";
+    } else {
+        LOG(warning) << "[RENDEZVOUS] Error closing 'compose-post' branch: " << status.error_message();
+    }
+  }
+  //--------------------------------
+  // RENDEZVOUS < close compose-post
+  //--------------------------------
+
+  upload_post_worker.join();
+  upload_home_timeline_worker.join();
+  upload_user_timeline_worker.join();
 
   try {
     upload_post_helper_baggage = upload_post_future.get();
@@ -804,6 +1049,8 @@ void ComposePostHandler::_UploadPostHelper(
     const Post &post,
     Cscope &cscope,
     const std::map<std::string, std::string> &carrier,
+    const std::string& rv_bid,
+    const std::string& rv_zone,
     Baggage& baggage, std::promise<Baggage> baggage_promise) {
 
   BAGGAGE(baggage);
@@ -823,6 +1070,9 @@ void ComposePostHandler::_UploadPostHelper(
     auto post_storage_client = post_storage_client_wrapper->GetClient();
     try {
       writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
+      writer_text_map["rv_bid"] = rv_bid;
+      writer_text_map["rv_zone"] = rv_zone;
+      writer_text_map["rv_zone_i"] = std::to_string(0);
       BaseRpcResponse response;
       post_storage_client->StorePost(response, req_id, post, cscope.to_json(), writer_text_map);
 
@@ -899,6 +1149,8 @@ void ComposePostHandler::_UploadHomeTimelineHelper(
     const std::vector<int64_t> &user_mentions_id,
     Cscope &cscope,
     const std::map<std::string, std::string> &carrier,
+    const std::string& rv_bid,
+    const std::string& rv_zone,
     Baggage& baggage, std::promise<Baggage> baggage_promise) {
   //
   // save ts for eval
@@ -948,6 +1200,15 @@ void ComposePostHandler::_UploadHomeTimelineHelper(
       ", \"timestamp\": " + std::to_string(timestamp) +
       ", \"user_mentions_id\": " + user_mentions_id_str +
       ", \"cscope_str\": " + cscope.to_json() +
+      // ------------
+      // > RENDEZVOUS
+      // ------------
+      ", \"rv_bid\": " + "\"" + rv_bid + "\"" +
+      ", \"rv_zone\": " + "\"" + rv_zone + "\"" +
+      ", \"rv_zone_i\": " + std::to_string(0) +
+      // ------------
+      // < RENDEZVOUS
+      // ------------
       ", \"carrier\": " + carrier_str + " }";
 
   try {

@@ -10,6 +10,13 @@
 #include "../utils_mongodb.h"
 #include "PostStorageHandler.h"
 
+#include <grpcpp/grpcpp.h>
+#include "../../gen-protos/rendezvous.grpc.pb.h"
+#include "../../rendezvous/include/monitor_mongodb.h"
+#include "../../rendezvous/include/monitor.h"
+#include "../../rendezvous/include/rendezvous.h"
+#include "../../rendezvous/include/storage_mongodb.h"
+
 using apache::thrift::server::TThreadedServer;
 using apache::thrift::transport::TServerSocket;
 using apache::thrift::transport::TFramedTransportFactory;
@@ -33,7 +40,9 @@ void sigintHandler(int sig) {
 int main(int argc, char *argv[]) {
   signal(SIGINT, sigintHandler);
   std::string zone = load_zone();
+  std::vector<std::string> zones = ALL_ZONES;
   std::string service_name = "post-storage-service-" + zone;
+
 
   init_logger();
   SetUpTracer("config/jaeger-config.yml", service_name);
@@ -42,6 +51,17 @@ int main(int argc, char *argv[]) {
   if (load_config_file("config/service-config.json", &config_json) != 0) {
     exit(EXIT_FAILURE);
   }
+
+  // ----------
+  // RENDEZVOUS
+  // ----------
+  json rendezvous_config_json;
+  if (load_config_file("config/rendezvous-config.json", &rendezvous_config_json) != 0) {
+    exit(EXIT_FAILURE);
+  }
+  // ----------
+  // RENDEZVOUS
+  // ----------
 
   memcached_client_pool = init_memcached_client_pool(config_json, "post-storage", 32, 1024);
 
@@ -94,6 +114,20 @@ int main(int argc, char *argv[]) {
       return EXIT_FAILURE;
     }
 
+    //------------
+    // RENDEZVOUS
+    //------------
+    if (rendezvous::is_rendezvous_enabled()) {
+      if (!rendezvous::StorageMongodb::create_index(mongodb_client, "post")) {
+        LOG(fatal) << "Failed to create rendezvous mongodb index on master";
+        return EXIT_FAILURE;
+      }
+      LOG(info) << "[RENDEZVOUS] Created mongodb index";
+    }
+    // ----------
+    // RENDEZVOUS
+    // ----------
+
     //----------
     // +ANTIPODE
     //----------
@@ -112,6 +146,24 @@ int main(int argc, char *argv[]) {
   ClientPool<ThriftClient<AntipodeOracleClient>>
       antipode_oracle_client_pool("antipode-oracle", antipode_oracle_addr,
                                 antipode_oracle_port, 0, 10000, 1000);
+  // ----------
+  // RENDEZVOUS
+  // ----------
+  std::string rendezvous_addr = rendezvous_config_json["servers"][zone]["addr"];
+  int rendezvous_port = rendezvous_config_json["servers"][zone]["port"];
+  std::string rendezvous_target = rendezvous_addr + ":" + std::to_string(rendezvous_port);
+  std::shared_ptr<grpc::Channel> rendezvous_channel  = grpc::CreateChannel(rendezvous_target, grpc::InsecureChannelCredentials());
+
+  auto shim = std::make_unique<rendezvous::DatastoreMonitorMongodb>(mongodb_client_pool, "post", "post");
+  rendezvous::DatastoreMonitor monitor(std::move(shim), "post-storage", "", zone, rendezvous_addr, rendezvous_port);
+
+  if (rendezvous::is_rendezvous_enabled()) {
+    LOG(info) << "[RENDEZVOUS] Initializing datastore monitor";
+    monitor.monitor_branches();
+  }
+  // ----------
+  // RENDEZVOUS
+  // ----------
 
   TThreadedServer server (
       std::make_shared<PostStorageServiceProcessor>(
@@ -119,7 +171,8 @@ int main(int argc, char *argv[]) {
               memcached_client_pool,
               mongodb_client_pool,
               &antipode_oracle_client_pool,
-              zone)),
+              rendezvous_channel,
+              zone, zones)),
       std::make_shared<TServerSocket>("0.0.0.0", port),
       std::make_shared<TFramedTransportFactory>(),
       std::make_shared<TBinaryProtocolFactory>()

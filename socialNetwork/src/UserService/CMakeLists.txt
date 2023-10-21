@@ -30,7 +30,7 @@ target_link_libraries(
     jaegertracing
     OpenSSL::SSL
     xtrace
-    protobuf
+    protobuf::libprotobuf
 )
 
 install(TARGETS UserService DESTINATION ./)

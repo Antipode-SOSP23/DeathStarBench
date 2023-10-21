@@ -8,7 +8,31 @@ services:
   #      - /opt/dns-proxy-server/conf:/app/conf
   #      - /var/run/docker.sock:/var/run/docker.sock
   #      - /etc/resolv.conf:/etc/resolv.conf
+  #
+  #----------------------------------------------------------
+  # Rendezvous Metadata Servers
+  #----------------------------------------------------------
+  rendezvous-eu:
+    image: rendezvous:latest
+    hostname: rendezvous-eu
+    environment:
+      CONSISTENCY_CHECKS: 1
+    restart: 'always'
+    entrypoint: sh -c "./rendezvous.sh local run server eu docker.json"
+    deploy:
+      placement:
+        constraints: [node.hostname == node04]
 
+  rendezvous-us:
+    image: rendezvous:latest
+    hostname: rendezvous-us
+    environment:
+      CONSISTENCY_CHECKS: 1
+    restart: 'always'
+    entrypoint: sh -c "./rendezvous.sh local run server us docker.json"
+    deploy:
+      placement:
+        constraints: [node.hostname == node06]
   #----------------------------------------------------------
   # Write notifications at EU replica
   #----------------------------------------------------------
@@ -55,6 +79,8 @@ services:
     environment:
       ZONE: eu
       ANTIPODE: 0
+      RENDEZVOUS: 0
+      CONSISTENCY_CHECKS: 1
     restart: 'no'
     command: dockerize -wait tcp://write-home-timeline-rabbitmq-setup:8000 -wait tcp://write-home-timeline-rabbitmq-eu:5672 -wait-retry-interval 10s -timeout 300s WriteHomeTimelineService
     deploy:
@@ -67,6 +93,8 @@ services:
     environment:
       ZONE: us
       ANTIPODE: 0
+      RENDEZVOUS: 0
+      CONSISTENCY_CHECKS: 1
     restart: 'no'
     command: dockerize -wait tcp://write-home-timeline-rabbitmq-setup:8000 -wait tcp://write-home-timeline-rabbitmq-us:5672 -wait-retry-interval 10s -timeout 300s WriteHomeTimelineService
     deploy:
@@ -159,6 +187,8 @@ services:
       ZONE: eu
       MASTER: 1
       ANTIPODE: 0
+      RENDEZVOUS: 0
+      CONSISTENCY_CHECKS: 1
     # ports:
     #   - 10002:9090
     restart: 'always'
@@ -214,6 +244,8 @@ services:
       ZONE: us
       MASTER: 0
       ANTIPODE: 0
+      RENDEZVOUS: 0
+      CONSISTENCY_CHECKS: 1
     deploy:
       placement:
         constraints: [node.hostname == node06]
@@ -308,6 +340,8 @@ services:
     hostname: compose-post-service
     environment:
       ZONE: eu
+      RENDEZVOUS: 0
+      CONSISTENCY_CHECKS: 1
     # ports:
       # - 10001:9090
     restart: 'no'

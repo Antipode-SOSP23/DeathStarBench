@@ -22,7 +22,7 @@ int load_config_file(const std::string &file_name, json *config_json) {
     return 0;
   }
   else {
-    LOG(error) << "Cannot open service-config.json";
+    LOG(error) << "Cannot open " << file_name;
     return -1;
   }
 };

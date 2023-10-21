@@ -30,9 +30,14 @@
 #include <thrift/transport/TBufferTransports.h>
 #include "WriteHomeTimelineService.h"
 
+#include <grpcpp/grpcpp.h>
+#include "../../gen-protos/rendezvous.grpc.pb.h"
+#include "../../rendezvous/include/rendezvous.h"
+
 // #define NUM_WORKERS 4
 // #define NUM_WORKERS 16
-#define NUM_WORKERS 32
+//#define NUM_WORKERS 32
+#define NUM_WORKERS 64
 
 using apache::thrift::server::TThreadedServer;
 using apache::thrift::transport::TServerSocket;
@@ -50,6 +55,7 @@ static mongoc_client_pool_t *_mongodb_client_pool;
 static ClientPool<ThriftClient<SocialGraphServiceClient>> *_social_graph_client_pool;
 static ClientPool<ThriftClient<AntipodeOracleClient>> *_antipode_oracle_client_pool;
 static ClientPool<ThriftClient<PostStorageServiceClient>> *_post_storage_client_pool;
+static std::shared_ptr<grpc::Channel> _rendezvous_channel;
 
 
 void sigintHandler(int sig) {
@@ -145,6 +151,79 @@ bool OnReceivedWorker(const AMQP::Message &msg) {
     //----------
     // DISTRIBUTED
     //----------
+
+    //------------------
+    // RENDEZVOUS > wait
+    //------------------
+    if (rendezvous::is_rendezvous_enabled()) {
+      const std::string& rv_zone = msg_json["rv_zone"];
+      int rv_zone_i = msg_json["rv_zone_i"];
+      auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+      //LOG(debug) << "[RENDEZVOUS] Sending wait request in zone" << rv_zone;
+      high_resolution_clock::time_point wait_start = high_resolution_clock::now();
+
+      grpc::Status status;
+      grpc::ClientContext grpc_ctx;
+      rendezvous::WaitRequestMessage rv_request;
+      rendezvous::WaitRequestResponse rv_response;
+      rv_request.set_rid(std::to_string(req_id));
+      rv_request.set_timeout(60);
+      rv_request.set_async_zone(rv_zone);
+      status = rv_stub->WaitRequest(&grpc_ctx, rv_request, &rv_response);
+
+      if (status.ok()) {
+        //LOG(debug) << "[RENDEZVOUS] Returned from wait request: prevented inconsistency = " << rv_response.prevented_inconsistency();
+        duration<double, std::milli> wait_duration = high_resolution_clock::now() - wait_start;
+        span->SetTag("wht_rendezvous_wait_duration", std::to_string(wait_duration.count()));
+        if (rv_response.prevented_inconsistency()) {
+          span->SetTag("wht_rendezvous_prevented_inconsistency", true);
+        } else {
+          span->SetTag("wht_rendezvous_prevented_inconsistency", false);
+        }
+        if (rv_response.timed_out()) {
+          span->SetTag("wht_rendezvous_timed_out", true);
+        } else {
+          span->SetTag("wht_rendezvous_timed_out", false);
+        }
+      }
+      else {
+        LOG(warning) << "[RENDEZVOUS] Error waiting for request:" << status.error_message();
+      }
+    }
+    //------------------
+    // RENDEZVOUS < wait
+    //------------------
+
+    // --------------------------------------
+    // RENDEZVOUS > close write-home-timeline
+    // --------------------------------------
+    if (rendezvous::is_rendezvous_enabled()) {
+      const std::string& rv_bid = msg_json["rv_bid"];
+      auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
+
+      //LOG(debug) << "[RENDEZVOUS] Sending close 'write-home-timeline' branch... ";
+      high_resolution_clock::time_point close_start = high_resolution_clock::now();
+
+      grpc::Status status;
+      grpc::ClientContext grpc_ctx;
+      rendezvous::CloseBranchMessage rv_request;
+      rendezvous::Empty rv_response;
+      rv_request.set_bid(rv_bid);
+      rv_request.set_region(zone);
+      status = rv_stub->CloseBranch(&grpc_ctx, rv_request, &rv_response);
+
+      if (status.ok()) {
+        duration<double, std::milli> close_duration = high_resolution_clock::now() - close_start;
+        span->SetTag("wht_rendezvous_cb_wht_duration", std::to_string(close_duration.count()));
+      }
+      else {
+        LOG(warning) << "[RENDEZVOUS] Error closing 'write-home-timeline' branch: " << status.error_message();
+      }
+    }
+    // --------------------------------------
+    // RENDEZVOUS < close write-home-timeline
+    // --------------------------------------
 
     //----------
     // EVAL CONSISTENCY ERRORS
@@ -522,6 +601,19 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
+  // ----------
+  // RENDEZVOUS
+  // ----------
+  json rendezvous_config_json;
+  if (rendezvous::is_rendezvous_enabled()) {
+    if (load_config_file("config/rendezvous-config.json", &rendezvous_config_json) != 0) {
+      exit(EXIT_FAILURE);
+    }
+  }
+  // ----------
+  // RENDEZVOUS
+  // ----------
+
   int port = config_json[service_name]["port"];
 
   std::string rabbitmq_addr = config_json["write-home-timeline-rabbitmq-" + zone]["addr"];
@@ -596,6 +688,20 @@ int main(int argc, char *argv[]) {
   _social_graph_client_pool = &social_graph_client_pool;
   _antipode_oracle_client_pool = &antipode_oracle_client_pool;
   _post_storage_client_pool = &post_storage_client_pool;
+
+  // ----------
+  // RENDEZVOUS
+  // ----------
+  if (rendezvous::is_rendezvous_enabled()) {
+    std::string rendezvous_addr = rendezvous_config_json["servers"][zone]["addr"];
+    int rendezvous_port = rendezvous_config_json["servers"][zone]["port"];
+    std::string rendezvous_target = rendezvous_addr + ":" + std::to_string(rendezvous_port);
+    _rendezvous_channel  = grpc::CreateChannel(rendezvous_target, grpc::InsecureChannelCredentials()); 
+    LOG(info) << "Initializing rendezvous stub on " << rendezvous_target;
+  }
+  // ----------
+  // RENDEZVOUS
+  // ----------
 
   std::unique_ptr<std::thread> threads_ptr[NUM_WORKERS];
   for (auto & thread_ptr : threads_ptr) {

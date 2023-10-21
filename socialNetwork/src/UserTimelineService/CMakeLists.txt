@@ -27,7 +27,7 @@ target_link_libraries(
     /usr/local/lib/libcpp_redis.a
     /usr/local/lib/libtacopie.a
     xtrace
-    protobuf
+    protobuf::libprotobuf
 )
 
 install(TARGETS UserTimelineService DESTINATION ./)

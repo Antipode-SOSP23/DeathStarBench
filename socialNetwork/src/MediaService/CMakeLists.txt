@@ -22,7 +22,7 @@ target_link_libraries(
     Boost::log_setup
     jaegertracing
     xtrace
-    protobuf
+    protobuf::libprotobuf
 )
 
 install(TARGETS MediaService DESTINATION ./)

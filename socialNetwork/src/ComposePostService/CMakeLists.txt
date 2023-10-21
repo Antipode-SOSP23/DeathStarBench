@@ -30,8 +30,10 @@ target_link_libraries(
     /usr/local/lib/libtacopie.a
     /usr/local/lib/libSimpleAmqpClient.so
     xtrace
-    protobuf
+    protobuf::libprotobuf
     tbb
+    rendezvous_lib
+    rendezvous_grpc_lib
 )
 
 install(TARGETS ComposePostService DESTINATION ./)

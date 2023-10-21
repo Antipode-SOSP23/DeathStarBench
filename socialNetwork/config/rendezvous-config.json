@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "eu": {
+      "addr": "rendezvous-eu",
+      "port": 8001
+    },
+    "us": {
+      "addr": "rendezvous-us",
+      "port": 8002
+    }
+  },
+  "grpc_connection_idle_time_ms": 10000,
+  "grpc_wait_request_timeout_s": 60,
+  "metadata_expiration_delay_s": 300,
+  "metadata_max_expiration_delay_s": 43200
+}
