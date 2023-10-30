@@ -68,6 +68,7 @@ class PostStorageHandler : public PostStorageServiceIf {
   std::string _zone;
   std::vector<std::string> _zones;
   std::exception_ptr _post_storage_teptr;
+  std::string _rv_branch_prefix;
 };
 
 PostStorageHandler::PostStorageHandler(
@@ -83,6 +84,7 @@ PostStorageHandler::PostStorageHandler(
   _rendezvous_channel = rendezvous_channel;
   _zone = zone;
   _zones = zones;
+  _rv_branch_prefix = "poststorage_" + _zone;
 }
 
 // Launch the pool with as much threads as cores
@@ -133,9 +135,11 @@ void PostStorageHandler::StorePost(
   // -----------------------------------------
   // RENDEZVOUS > open post-storage write-post
   // -----------------------------------------
-  std::string rv_bid;
-  std::string rv_bid_write_post;
+  rendezvous::AsyncRequestHelper * rh = new rendezvous::AsyncRequestHelper{};
+  std::string rv_bid, rv_bid_write_post;
   if (rendezvous::is_rendezvous_enabled()) {
+    //LOG(debug) << "[RENDEZVOUS] Preparing register 'post-storage write-post' branch";
+
     // get service's main branch id
     auto it = carrier.find("rv_bid");
     if (it != carrier.end()) {
@@ -145,33 +149,32 @@ void PostStorageHandler::StorePost(
       LOG(warning) << "[RENDEZVOUS] Error fetching rv_bid from context carrier";
     }
 
-    std::string async_zone;
+    std::string rv_composed_zone;
     it = carrier.find("rv_zone");
     if (it != carrier.end()) {
-      async_zone = it->second;
+      rv_composed_zone = it->second;
     }
     else {
       LOG(warning) << "[RENDEZVOUS] Error fetching async_zone from context carrier";
     }
 
-    int async_zone_i;
-    it = carrier.find("rv_zone_i");
-    if (it != carrier.end()) {
-      async_zone_i = atoi((it->second).c_str());
-    }
-    else {
-      LOG(warning) << "[RENDEZVOUS] Error fetching async_zone from context carrier";
-    }
+    auto rv_parsed_zone = rendezvous::parse_async_zone(rv_composed_zone);
+    const std::string& rv_zone = rv_parsed_zone.first;
+    int rv_sub_zones = rv_parsed_zone.second;
 
-    std::string next_async_zone = rendezvous::next_async_zone(async_zone, async_zone_i++);
+    std::string next_async_zone = rendezvous::next_async_zone(rv_zone, rv_sub_zones++);
+    rv_bid_write_post = rendezvous::compute_bid(_rv_branch_prefix, std::to_string(req_id), 0);
 
     high_resolution_clock::time_point register_start = high_resolution_clock::now();
     auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
 
-    grpc::ClientContext grpc_ctx;
+    grpc::ClientContext * grpc_ctx = new grpc::ClientContext();
+    grpc::Status * grpc_status = new grpc::Status();
+    rendezvous::RegisterBranchResponse * rv_response = new rendezvous::RegisterBranchResponse();
+
     rendezvous::RegisterBranchMessage rv_request;
-    rendezvous::RegisterBranchResponse rv_response;
     rv_request.set_rid(std::to_string(req_id));
+    rv_request.set_bid(rv_bid_write_post);
     rv_request.set_service("post-storage");
     rv_request.set_tag("write-post");
     rv_request.set_monitor(true);
@@ -179,15 +182,22 @@ void PostStorageHandler::StorePost(
     rv_request.set_async_zone(next_async_zone);
     for (const auto& zone: _zones)
       rv_request.add_regions(zone);
-
+    
+    // SYNCHRONOUS REGISTRATION OF BRANCH
+    //grpc::ClientContext grpc_ctx;
+    //rendezvous::RegisterBranchResponse rv_response;
     //LOG(debug) << "[RENDEZVOUS] Sending register 'post-storage write-post' branch in zone " << next_async_zone;
-    auto status = rv_stub->RegisterBranch(&grpc_ctx, rv_request, &rv_response);
+    /* auto status = rv_stub->RegisterBranch(&grpc_ctx, rv_request, &rv_response);
     if (status.ok()) {
       rv_bid_write_post = rv_response.bid();
     } 
     else {
       LOG(warning) << "[RENDEZVOUS] Error registering 'post-storage write-post' branch: " << status.error_message();
-    }
+    } */
+
+    //LOG(debug) << "[RENDEZVOUS] Sending register 'post-storage write-post' branch with id " << rv_bid_write_post << " @ " << next_async_zone;
+    rh->rpcs.emplace_back(rv_stub->AsyncRegisterBranch(grpc_ctx, rv_request, &(rh->queue)));
+    rendezvous::saveAsyncCall(rh, grpc_ctx, grpc_status, rv_response);
     duration<double, std::milli> register_duration = high_resolution_clock::now() - register_start;
     span->SetTag("poststorage_rendezvous_rb_poststorage_writepost_duration", std::to_string(register_duration.count()));
   }
@@ -346,10 +356,18 @@ void PostStorageHandler::StorePost(
   // RENDEZVOUS > close post-storage
   // -------------------------------
   if (rendezvous::is_rendezvous_enabled()) {
+    high_resolution_clock::time_point async_complete_start = high_resolution_clock::now();
+    //LOG(debug) << "[RENDEZVOUS] Completing all previous async register branches...";
+    bool ok = rendezvous::CompleteAsyncCalls(rh);
+    if (!ok) {
+      LOG(warning) << "[RENDEZVOUS] Error completing async register branches.";
+    }
+    //LOG(debug) << "[RENDEZVOUS] Done completing all previous async register branches with OK STATUS = " << ok;
+    duration<double, std::milli> async_complete_duration = high_resolution_clock::now() - async_complete_start;
+    span->SetTag("poststorage_rendezvous_rb_async_complete_duration", std::to_string(async_complete_duration.count()));
+
     high_resolution_clock::time_point close_start = high_resolution_clock::now();
     auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
-
-    //LOG(debug) << "[RENDEZVOUS] Sending close 'post-storage' branch... ";
 
     grpc::Status status;
     grpc::ClientContext grpc_ctx;

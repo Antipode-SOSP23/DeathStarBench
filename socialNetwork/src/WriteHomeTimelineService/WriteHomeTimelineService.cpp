@@ -156,11 +156,11 @@ bool OnReceivedWorker(const AMQP::Message &msg) {
     // RENDEZVOUS > wait
     //------------------
     if (rendezvous::is_rendezvous_enabled()) {
-      const std::string& rv_zone = msg_json["rv_zone"];
-      int rv_zone_i = msg_json["rv_zone_i"];
+      const std::string& rv_composed_zone = msg_json["rv_zone"];
+      const std::string& rv_zone = rendezvous::parse_async_zone(rv_composed_zone).first;
       auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
 
-      //LOG(debug) << "[RENDEZVOUS] Sending wait request in zone" << rv_zone;
+      //LOG(debug) << "[RENDEZVOUS] Sending wait request @ " << rv_zone;
       high_resolution_clock::time_point wait_start = high_resolution_clock::now();
 
       grpc::Status status;
@@ -202,7 +202,7 @@ bool OnReceivedWorker(const AMQP::Message &msg) {
       const std::string& rv_bid = msg_json["rv_bid"];
       auto rv_stub = rendezvous::ClientService::NewStub(_rendezvous_channel);
 
-      //LOG(debug) << "[RENDEZVOUS] Sending close 'write-home-timeline' branch... ";
+      ////LOG(debug) << "[RENDEZVOUS] Sending close 'write-home-timeline' branch... ";
       high_resolution_clock::time_point close_start = high_resolution_clock::now();
 
       grpc::Status status;

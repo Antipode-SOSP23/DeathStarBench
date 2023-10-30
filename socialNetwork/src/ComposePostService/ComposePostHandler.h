@@ -1071,8 +1071,7 @@ void ComposePostHandler::_UploadPostHelper(
     try {
       writer_text_map["baggage"] = BRANCH_CURRENT_BAGGAGE().str();
       writer_text_map["rv_bid"] = rv_bid;
-      writer_text_map["rv_zone"] = rv_zone;
-      writer_text_map["rv_zone_i"] = std::to_string(0);
+      writer_text_map["rv_zone"] = rendezvous::compose_async_zone(rv_zone);
       BaseRpcResponse response;
       post_storage_client->StorePost(response, req_id, post, cscope.to_json(), writer_text_map);
 
@@ -1204,8 +1203,7 @@ void ComposePostHandler::_UploadHomeTimelineHelper(
       // > RENDEZVOUS
       // ------------
       ", \"rv_bid\": " + "\"" + rv_bid + "\"" +
-      ", \"rv_zone\": " + "\"" + rv_zone + "\"" +
-      ", \"rv_zone_i\": " + std::to_string(0) +
+      ", \"rv_zone\": " + "\"" + rendezvous::compose_async_zone(rv_zone) + "\"" +
       // ------------
       // < RENDEZVOUS
       // ------------

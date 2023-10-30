@@ -112,6 +112,7 @@ void DatastoreMonitor::_close_branches() {
             _cond.wait(lock);
         }
         for (auto bid_it = _bids.begin(); bid_it != _bids.end(); ) {
+            //LOG(debug) << "Going to find bid = " << (*bid_it);
             if (_shim->find_metadata(*bid_it)) {
                 request.set_bid(*bid_it);
                 grpc::ClientContext context;
@@ -126,6 +127,7 @@ void DatastoreMonitor::_close_branches() {
                 }
             }
             else {
+                //LOG(debug) << "Going to find bid = " << (*bid_it);
                 ++bid_it;
             }
         }
