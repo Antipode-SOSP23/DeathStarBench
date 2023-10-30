@@ -318,6 +318,10 @@ bool OnReceivedWorker(const AMQP::Message &msg) {
     span->SetTag("consistency_mongoread_duration", std::to_string(time_span.count()));
     span->SetTag("notification_size_bytes", std::to_string(msg.bodySize()));
 
+    high_resolution_clock::time_point wht_end_ts = high_resolution_clock::now();
+    uint64_t wht_end_ts_int = duration_cast<milliseconds>(wht_end_ts.time_since_epoch()).count();
+    span->SetTag("wht_end_ts", std::to_string(wht_end_ts_int));
+
     //----------
     // -EVAL CONSISTENCY ERRORS
     //----------

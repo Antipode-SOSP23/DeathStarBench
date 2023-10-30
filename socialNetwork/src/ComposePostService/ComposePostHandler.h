@@ -766,7 +766,9 @@ void ComposePostHandler::_ComposeAndUpload(
   high_resolution_clock::time_point ts;
   duration<double, std::milli> time_diff;
 
-  high_resolution_clock::time_point start_ts = high_resolution_clock::now();
+  high_resolution_clock::time_point composepost_start_ts = high_resolution_clock::now();
+  uint64_t composepost_start_ts_int = duration_cast<milliseconds>(composepost_start_ts.time_since_epoch()).count();
+  span->SetTag("composepost_start_ts", std::to_string(composepost_start_ts_int));
 
   //----------
   // -ANTIPODE
